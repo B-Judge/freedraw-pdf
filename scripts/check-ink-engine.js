@@ -135,6 +135,32 @@ try {
 	}
 
 	assert(stroke.points.length >= 72, `appendStrokePoints over-compressed handwriting samples (${stroke.points.length})`);
+	// Slow writing delivers many sub-threshold samples. The stored path must still
+	// follow the pen rather than collapsing a curve into one sliding straight segment.
+	const slowPageWidth = 1000;
+	const slowStroke = { widthScale: 3 / slowPageWidth, points: [] };
+	const slowSamples = Array.from({ length: 261 }, (_, index) => {
+		const angle = Math.PI * index / 260;
+		return { x: 0.5 + (40 / slowPageWidth) * Math.cos(angle), y: 0.5 - (40 / slowPageWidth) * Math.sin(angle), pressure: 0.5, t: index * 4 };
+	});
+	for (const sample of slowSamples) {
+		ink.appendStrokePoints(slowStroke, [sample], { mergeThreshold: 1 / slowPageWidth });
+	}
+	const distanceToSegment = (point, start, end) => {
+		const dx = end.x - start.x;
+		const dy = end.y - start.y;
+		const lengthSquared = (dx * dx) + (dy * dy);
+		const ratio = lengthSquared ? Math.max(0, Math.min(1, (((point.x - start.x) * dx) + ((point.y - start.y) * dy)) / lengthSquared)) : 0;
+		return Math.hypot(point.x - start.x - (ratio * dx), point.y - start.y - (ratio * dy));
+	};
+	const slowDeviationPx = Math.max(...slowSamples.map((sample) => {
+		let nearest = Infinity;
+		for (let index = 1; index < slowStroke.points.length; index += 1) {
+			nearest = Math.min(nearest, distanceToSegment(sample, slowStroke.points[index - 1], slowStroke.points[index]));
+		}
+		return nearest;
+	})) * slowPageWidth;
+	assert(slowStroke.points.length > 2 && slowDeviationPx <= 1, `slow strokes drift from the pen path (${slowDeviationPx.toFixed(2)} px); sub-threshold samples must not drag the committed tail`);
 	assert(stroke.points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.pressure)), "stroke contains non-finite point data");
 	assert(stroke.points.every((point) => point.pressure >= 0.06 && point.pressure <= 1), "stroke pressure escaped expected range");
 

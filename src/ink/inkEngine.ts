@@ -109,6 +109,11 @@ function getStrokeSampleThreshold(strokeWidthScale?: number, override?: number):
 	return clamp(widthAwareThreshold, 0.00012, 0.00065);
 }
 
+// Strokes whose last point is a provisional "live tip": it tracks the newest
+// sample but has not yet moved a full sample threshold away from the last
+// committed point. Kept outside the stroke object so it is never serialized.
+const strokesWithProvisionalTail = new WeakSet<InkStroke>();
+
 export function appendStrokePoints<TPoint extends InkPoint, TStroke extends InkStroke & { points: TPoint[] }>(
 	stroke: TStroke,
 	points: TPoint[],
@@ -117,22 +122,44 @@ export function appendStrokePoints<TPoint extends InkPoint, TStroke extends InkS
 	let appended = false;
 	for (const sample of points) {
 		const previousPoint = stroke.points[stroke.points.length - 1];
+		if (!previousPoint) {
+			stroke.points.push({ ...sample, pressure: clamp(sample.pressure * INK_PRESSURE_GAIN, 0.12, 0.88) });
+			strokesWithProvisionalTail.delete(stroke);
+			appended = true;
+			continue;
+		}
+		const pressure = getNextStrokePressure(previousPoint.pressure, sample.pressure, previousPoint, sample, stroke.widthScale);
+		const lastIndex = stroke.points.length - 1;
+		if (options.forceCommitFinalPoint) {
+			stroke.points[lastIndex] = { ...sample, pressure: Math.max(previousPoint.pressure, pressure) };
+			strokesWithProvisionalTail.delete(stroke);
+			appended = true;
+			continue;
+		}
+		// Distance is measured from the last *committed* point, never from the
+		// moving tip. Measuring from the tip (and then overwriting it) let the tip
+		// slide indefinitely during slow writing, so a whole curve collapsed into
+		// one straight segment that only "snapped" back to a curve once the pen
+		// moved fast enough for a single sample to clear the threshold.
+		const hasProvisionalTail = strokesWithProvisionalTail.has(stroke) && lastIndex > 0;
+		const anchor = hasProvisionalTail ? stroke.points[lastIndex - 1] : previousPoint;
 		const threshold = getStrokeSampleThreshold(stroke.widthScale, options.mergeThreshold);
-		if (previousPoint && distanceBetween(previousPoint, sample) < threshold && !options.forceCommitFinalPoint) {
-			const pressure = getNextStrokePressure(previousPoint.pressure, sample.pressure, previousPoint, sample, stroke.widthScale);
-			stroke.points[stroke.points.length - 1] = { ...sample, pressure };
-			appended = true;
-			continue;
+		const withinThreshold = distanceBetween(anchor, sample) < threshold;
+		if (hasProvisionalTail) {
+			// Move the live tip to the pen. Once it clears the threshold it becomes a
+			// committed point; every dropped intermediate sample lay within the
+			// threshold of the anchor, so the stored path never strays farther
+			// than that from what the pen actually drew.
+			stroke.points[lastIndex] = { ...sample, pressure };
+			if (!withinThreshold) {
+				strokesWithProvisionalTail.delete(stroke);
+			}
+		} else {
+			stroke.points.push({ ...sample, pressure });
+			if (withinThreshold) {
+				strokesWithProvisionalTail.add(stroke);
+			}
 		}
-		const pressure = previousPoint
-			? getNextStrokePressure(previousPoint.pressure, sample.pressure, previousPoint, sample, stroke.widthScale)
-			: clamp(sample.pressure * INK_PRESSURE_GAIN, 0.12, 0.88);
-		if (previousPoint && options.forceCommitFinalPoint) {
-			stroke.points[stroke.points.length - 1] = { ...sample, pressure: Math.max(previousPoint.pressure, pressure) };
-			appended = true;
-			continue;
-		}
-		stroke.points.push({ ...sample, pressure });
 		appended = true;
 	}
 	return appended;

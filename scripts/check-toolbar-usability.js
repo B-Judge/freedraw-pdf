@@ -338,4 +338,114 @@ if (
 	throw new Error(`A bottom-anchored menu can overlap its toolbar anchor: ${JSON.stringify(bottomToolbarPlacement)}`);
 }
 
+// Undo/redo buttons must run exactly one history step per press. The old guard
+// was cleared by a zero-delay timer that fired before the pen or finger lifted,
+// so the trailing click ran undo a second time.
+assertContains("main.ts", mainTs, "bindSingleButtonActivation(button, this.ownerWindow, onActivate);", "toolbar history buttons must use the single-activation helper");
+{
+	const vm = require("vm");
+	const activationSource = ts.transpileModule(read("src/ui/buttonActivation.ts"), {
+		compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2018 }
+	}).outputText;
+	const activationModule = { exports: {} };
+	vm.runInNewContext(activationSource, { module: activationModule, exports: activationModule.exports }, { filename: "buttonActivation.check.cjs" });
+	const { bindSingleButtonActivation, POINTER_CLICK_SUPPRESSION_MS } = activationModule.exports;
+
+	function createHarness() {
+		let now = 0;
+		let nextHandle = 1;
+		const pending = new Map();
+		const timers = {
+			setTimeout(handler, timeout) {
+				const handle = nextHandle++;
+				pending.set(handle, { handler, at: now + timeout });
+				return handle;
+			},
+			clearTimeout(handle) {
+				pending.delete(handle);
+			}
+		};
+		const advance = (ms) => {
+			now += ms;
+			for (const [handle, timer] of [...pending].sort((a, b) => a[1].at - b[1].at)) {
+				if (timer.at <= now && pending.has(handle)) {
+					pending.delete(handle);
+					timer.handler();
+				}
+			}
+		};
+		const button = new EventTarget();
+		button.disabled = false;
+		let count = 0;
+		bindSingleButtonActivation(button, timers, () => { count += 1; });
+		const fire = (type, props) => {
+			const event = new Event(type, { cancelable: true, bubbles: true });
+			for (const [key, value] of Object.entries(props)) {
+				Object.defineProperty(event, key, { value });
+			}
+			button.dispatchEvent(event);
+		};
+		// Click events as browsers send them: Chromium reports the pointer type on
+		// click (touch taps arrive with detail 0); WebKit omits it and uses detail 1.
+		const tap = (pointerType, holdMs, engine = "chromium") => {
+			fire("pointerdown", { pointerType, button: 0 });
+			advance(holdMs);
+			fire("click", engine === "chromium"
+				? { pointerType, detail: pointerType === "touch" ? 0 : 1 }
+				: { detail: 1 });
+		};
+		return { button, advance, fire, tap, count: () => count };
+	}
+
+	for (const engine of ["chromium", "webkit"]) {
+		for (const pointerType of ["pen", "touch", "mouse"]) {
+			for (const holdMs of [0, 30, 80, 250, 900]) {
+				const harness = createHarness();
+				harness.tap(pointerType, holdMs, engine);
+				if (harness.count() !== 1) {
+					throw new Error(`One ${pointerType} press (${engine}) held ${holdMs} ms ran ${harness.count()} history steps; it must run exactly one.`);
+				}
+			}
+		}
+	}
+
+	const repeated = createHarness();
+	repeated.tap("pen", 60);
+	repeated.advance(120);
+	repeated.tap("pen", 60);
+	repeated.advance(120);
+	repeated.tap("pen", 60);
+	if (repeated.count() !== 3) {
+		throw new Error(`Three quick pen taps ran ${repeated.count()} history steps; each tap must run exactly one.`);
+	}
+
+	const keyboard = createHarness();
+	keyboard.fire("click", { pointerType: "", detail: 0 });
+	if (keyboard.count() !== 1) {
+		throw new Error("Keyboard activation (click without a pointer press) must run one history step.");
+	}
+
+	const slidOff = createHarness();
+	slidOff.fire("pointerdown", { pointerType: "pen", button: 0 });
+	slidOff.advance(POINTER_CLICK_SUPPRESSION_MS + 50);
+	slidOff.fire("click", { pointerType: "", detail: 0 });
+	if (slidOff.count() !== 2) {
+		throw new Error("A keyboard click long after an abandoned press must not stay suppressed.");
+	}
+
+	const disabled = createHarness();
+	disabled.button.disabled = true;
+	disabled.tap("pen", 60);
+	disabled.fire("click", { pointerType: "", detail: 0 });
+	if (disabled.count() !== 0) {
+		throw new Error("A disabled history button must not run history steps.");
+	}
+
+	const secondaryMouse = createHarness();
+	secondaryMouse.fire("pointerdown", { pointerType: "mouse", button: 2 });
+	if (secondaryMouse.count() !== 0) {
+		throw new Error("A secondary mouse button must not run a history step.");
+	}
+}
+
 console.log("Toolbar usability verifier passed.");

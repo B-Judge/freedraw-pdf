@@ -67,6 +67,7 @@ import {
 } from "./src/text/textLayout";
 import { PreviewStateController, ToolStateController, isShapeTool } from "./src/tools/toolState";
 import { resolveOverlayModeCursor } from "./src/interaction/cursorState";
+import { bindSingleButtonActivation } from "./src/ui/buttonActivation";
 import { resolveAnchoredPopoverPlacement } from "./src/ui/popoverPlacement";
 import { TransientPopoverRegistry, createTransientPopoverEnvironment } from "./src/ui/transientPopoverRegistry";
 import { addMenuDescriptors, menuSeparator, type MenuDescriptor } from "./src/ui/menuDescriptors";
@@ -8105,33 +8106,10 @@ class NativePdfAnnotatorSession {
 		button.setAttribute("aria-label", label);
 		button.title = label;
 		setIcon(button, icon);
-		let handledPointerDown = false;
-		button.addEventListener("pointerdown", (event) => {
-			event.stopPropagation();
-			if (button.disabled) {
-				return;
-			}
-			if (event.pointerType === "mouse" && event.button !== 0) {
-				return;
-			}
-			handledPointerDown = true;
-			event.preventDefault();
-			onActivate();
-			this.ownerWindow.setTimeout(() => {
-				handledPointerDown = false;
-			}, 0);
-		});
-		button.addEventListener("click", (event) => {
-			event.stopPropagation();
-			if (handledPointerDown) {
-				event.preventDefault();
-				return;
-			}
-			event.preventDefault();
-			if (!button.disabled) {
-				onActivate();
-			}
-		});
+		// One press must run exactly one undo or redo step. The click that follows
+		// a pointer-activated press is suppressed until it arrives, not for a
+		// single timer tick, which expired before the pen or finger lifted.
+		bindSingleButtonActivation(button, this.ownerWindow, onActivate);
 		return button;
 	}
 

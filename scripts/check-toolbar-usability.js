@@ -87,7 +87,7 @@ assertContains("main.ts", mainTs, "this.ownerWindow.visualViewport?.addEventList
 assertContains("main.ts", mainTs, "const safeBottom = viewport.offsetTop + viewport.height - 48;", "inline text editing must keep a visible gap above the software keyboard");
 assertContains("main.ts", mainTs, "const visualViewport = this.ownerWindow.visualViewport;", "popup placement must use the visual viewport on iPad");
 assertContains("main.ts", mainTs, "const effectiveRadius = isTabletWebKitTouchDevice() ? Math.max(pixelRadius, 14) : pixelRadius;", "touch selection must use a larger geometry hit target without changing desktop precision");
-assertContains("main.ts", mainTs, "const pixelRadius = isTabletWebKitTouchDevice() ? 22 : 14;", "touch resize handles must expose a 44px hit diameter");
+assertContains("main.ts", mainTs, "const outsidePixelRadius = isTabletWebKitTouchDevice() ? 22 : 14;", "touch resize handles must expose a 44px hit diameter outside the selection (inside it, only the drawn bubble resizes so the box can be dragged)");
 assertOccurrenceAtLeast("main.ts", mainTs, "rightGroup.className = \"pdf-native-annotator-group is-actions\";", 2, "read and annotation modes must keep document actions in the fixed rail");
 assertContains("main.ts", mainTs, "leftGroup.className = \"pdf-native-annotator-group is-tools\";", "toolbar drawing controls must use the scrollable rail");
 assertContains("main.ts", mainTs, "const previousToolScrollLeft =", "toolbar rebuilds must preserve the user's horizontal tool position");

@@ -176,3 +176,76 @@ console.log("Interaction polish verifier passed.");
 
 assertContains("styles.css", stylesCss, "caret-color: var(--annotator-inline-text-color", "native caret must stay aligned with native editable text");
 assertContains("main.ts", mainTs, "if (event.isComposing) { return false; }", "IME composition must not be intercepted by annotation shortcuts");
+
+// Selection handles: inside the selection box only the drawn handle bubbles
+// resize; everywhere else inside drags. Outside the box the generous handle
+// radius still applies. Previously one generous radius applied everywhere, so a
+// small selection (a word or a short line) could only be stretched, never moved.
+{
+	const ts = require("typescript");
+	const vm = require("vm");
+	assertContains("main.ts", mainTs, "return resolveSelectionHandleHit(bounds, point, this.getSelectionHandleHitOptions(target.page));", "single-target handle hits must use the bubble-aware resolver");
+	assertContains("main.ts", mainTs, "return resolveSelectionHandleHit(bounds, point, this.getSelectionHandleHitOptions(pageNumber));", "multi-target handle hits must use the bubble-aware resolver");
+	const handleSource = ts.transpileModule(read("src/annotation/selectionHandles.ts"), {
+		compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2018 }
+	}).outputText;
+	const handleModule = { exports: {} };
+	vm.runInNewContext(handleSource, { module: handleModule, exports: handleModule.exports }, { filename: "selectionHandles.check.cjs" });
+	const { resolveSelectionHandleHit, getSelectionHandlePoints } = handleModule.exports;
+
+	const pageWidth = 800;
+	const pageHeight = 1035;
+	const tablet = { pageWidth, pageHeight, bubbleHitRadiusPx: 6, outsideHitRadiusPx: 22 };
+	const desktop = { pageWidth, pageHeight, bubbleHitRadiusPx: 4.5, outsideHitRadiusPx: 14 };
+	const box = (left, top, width, height) => ({
+		left: left / pageWidth,
+		top: top / pageHeight,
+		right: (left + width) / pageWidth,
+		bottom: (top + height) / pageHeight
+	});
+	const at = (x, y) => ({ x: x / pageWidth, y: y / pageHeight });
+	const hit = (bounds, x, y, options) => resolveSelectionHandleHit(bounds, at(x, y), options);
+
+	for (const [label, options] of [["tablet", tablet], ["desktop", desktop]]) {
+		// A one-word selection, 40 x 22 px at (200, 300).
+		const word = box(200, 300, 40, 22);
+		assert(hit(word, 220, 311, options) === null, `${label}: the middle of a one-word selection must drag, not resize`);
+		assert(hit(word, 210, 306, options) === null, `${label}: a point inside a small selection but off every bubble must drag`);
+		for (const handlePoint of getSelectionHandlePoints(word)) {
+			const x = handlePoint.x * pageWidth;
+			const y = handlePoint.y * pageHeight;
+			assert(hit(word, x, y, options) === handlePoint.handle, `${label}: pressing the ${handlePoint.handle} bubble must resize with that handle`);
+		}
+		assert(hit(word, 201, 301, options) === "nw", `${label}: a press on the part of a corner bubble inside the box must resize`);
+		// Outside the box the generous radius keeps handles easy to grab.
+		const outsideReach = options.outsideHitRadiusPx - 2;
+		assert(hit(word, 200 - outsideReach * 0.7, 300 - outsideReach * 0.7, options) === "nw", `${label}: a press just outside a corner must still grab that handle`);
+		assert(hit(word, 200 - options.outsideHitRadiusPx - 4, 300, options) === null, `${label}: a press beyond the handle radius outside the box must not resize`);
+
+		// Across the interior of a one-line selection, only the bubbles resize.
+		const line = box(200, 300, 220, 30);
+		let interior = 0;
+		let resizing = 0;
+		for (let x = 0.5; x < 220; x += 1) {
+			for (let y = 0.5; y < 30; y += 1) {
+				interior += 1;
+				if (hit(line, 200 + x, 300 + y, options)) {
+					resizing += 1;
+				}
+			}
+		}
+		assert(resizing / interior < 0.08, `${label}: ${(100 * resizing / interior).toFixed(1)}% of a one-line selection resizes; only the handle bubbles should`);
+	}
+
+	// When bubbles overlap on a tiny selection, the nearest handle wins.
+	const tiny = box(100, 100, 8, 6);
+	assert(hit(tiny, 101, 101, tablet) === "nw", "the nearest handle must win when bubbles overlap");
+	assert(hit(tiny, 107, 105, tablet) === "se", "the nearest handle must win when bubbles overlap");
+
+	// Hit distances are measured in pixels, not in unequal normalized page units.
+	const tall = box(300, 300, 200, 100);
+	assert(hit(tall, 400, 300 - 21, tablet) === "n", "the outside radius must be measured in pixels vertically");
+	assert(hit(tall, 400, 300 - 23, tablet) === null, "the outside radius must be measured in pixels vertically");
+}
+
+console.log("Selection handle precision verified.");

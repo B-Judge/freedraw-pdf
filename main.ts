@@ -6,6 +6,7 @@ import { getAnnotationRenderables, getRenderableOrder, reorderRenderables } from
 import type { AnnotationReorderDirection } from "./src/annotation/renderOrder";
 import { getNormalizedStrokePadding, getShapeBounds, getStrokeBounds, getTextBounds } from "./src/annotation/bounds";
 import { eraseStrokeSegmentsAlongPath } from "./src/annotation/eraser";
+import { getSelectionHandlePoints, resolveSelectionHandleHit, type SelectionHandleHitOptions } from "./src/annotation/selectionHandles";
 import { cloneAnnotationsForPage, distanceBetweenSegments, distanceToBounds, distanceToRectEdge, distanceToShape, distanceToStroke, getClipboardPasteOffset, getSelectionBoxPoints, normalizeRect, parseRegionReference, pointInBounds, segmentIntersectsExpandedBounds } from "./src/annotation/interaction";
 import { PAPER_TEMPLATE_DOT_COLOR, PAPER_TEMPLATE_GRID_COLOR, PAPER_TEMPLATE_LINE_COLOR, getPaperTemplateMetrics } from "./src/notebook/paperTemplates";
 import {
@@ -124,6 +125,8 @@ const BLANK_PDF_EXPORT_WIDTH_PX = 1600;
 const SELECTION_OUTLINE_COLOR = "#6b6b6b";
 const SELECTION_FILL_COLOR = "rgba(107, 107, 107, 0.04)";
 const SELECTION_HANDLE_FILL_COLOR = "#ffffff";
+// Extra hit radius around a drawn handle bubble when pressing inside the selection.
+const SELECTION_HANDLE_BUBBLE_HIT_TOLERANCE_PX = 1;
 const SELECTION_LINE_DASH = [2, 2];
 
 function isDomNode(value: unknown): value is Node {
@@ -11936,14 +11939,22 @@ class NativePdfAnnotatorSession {
 		return handle === "nw" || handle === "ne" || handle === "sw" || handle === "se";
 	}
 
-	private getResizeHandleHitThreshold(pageNumber: number): number {
+	private getSelectionHandleHitOptions(pageNumber: number): SelectionHandleHitOptions {
 		const surface = this.pageSurfaces.get(pageNumber);
 		const minDimension = Math.min(surface?.lastWidth ?? 0, surface?.lastHeight ?? 0);
-		if (!minDimension) {
-			return 0.022;
+		if (!surface || !minDimension) {
+			// No rendered size yet: work in normalized units with the previous fallback radius.
+			return { pageWidth: 1, pageHeight: 1, bubbleHitRadiusPx: 0.008, outsideHitRadiusPx: 0.022 };
 		}
-		const pixelRadius = isTabletWebKitTouchDevice() ? 22 : 14;
-		return clamp(pixelRadius / minDimension, 0.012, 0.06);
+		const outsidePixelRadius = isTabletWebKitTouchDevice() ? 22 : 14;
+		return {
+			pageWidth: surface.lastWidth,
+			pageHeight: surface.lastHeight,
+			// Inside the selection only the drawn bubble (plus 1 px for its
+			// anti-aliased edge) resizes; the rest of the box drags.
+			bubbleHitRadiusPx: this.getResizeHandleVisualRadius(surface) + SELECTION_HANDLE_BUBBLE_HIT_TOLERANCE_PX,
+			outsideHitRadiusPx: clamp(outsidePixelRadius, minDimension * 0.012, minDimension * 0.06)
+		};
 	}
 
 	private getResizeHandleVisualRadius(surface: PageSurface): number {
@@ -12165,18 +12176,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private getHandlePoints(bounds: { left: number; right: number; top: number; bottom: number }): Array<{ handle: ResizeHandle; x: number; y: number }> {
-		const midX = (bounds.left + bounds.right) / 2;
-		const midY = (bounds.top + bounds.bottom) / 2;
-		return [
-			{ handle: "nw", x: bounds.left, y: bounds.top },
-			{ handle: "n", x: midX, y: bounds.top },
-			{ handle: "ne", x: bounds.right, y: bounds.top },
-			{ handle: "e", x: bounds.right, y: midY },
-			{ handle: "se", x: bounds.right, y: bounds.bottom },
-			{ handle: "s", x: midX, y: bounds.bottom },
-			{ handle: "sw", x: bounds.left, y: bounds.bottom },
-			{ handle: "w", x: bounds.left, y: midY }
-		];
+		return getSelectionHandlePoints(bounds);
 	}
 
 	private getHandleHit(target: SelectedTarget, point: AnnotationPoint): ResizeHandle | null {
@@ -12184,13 +12184,7 @@ class NativePdfAnnotatorSession {
 		if (!bounds) {
 			return null;
 		}
-		const threshold = this.getResizeHandleHitThreshold(target.page);
-		for (const handlePoint of this.getHandlePoints(bounds)) {
-			if (distanceBetween(point, { x: handlePoint.x, y: handlePoint.y }) <= threshold) {
-				return handlePoint.handle;
-			}
-		}
-		return null;
+		return resolveSelectionHandleHit(bounds, point, this.getSelectionHandleHitOptions(target.page));
 	}
 
 	private getSelectionHandleHit(pageNumber: number, point: AnnotationPoint): ResizeHandle | null {
@@ -12212,13 +12206,7 @@ class NativePdfAnnotatorSession {
 		if (!bounds) {
 			return null;
 		}
-		const threshold = this.getResizeHandleHitThreshold(pageNumber);
-		for (const handlePoint of this.getHandlePoints(bounds)) {
-			if (distanceBetween(point, { x: handlePoint.x, y: handlePoint.y }) <= threshold) {
-				return handlePoint.handle;
-			}
-		}
-		return null;
+		return resolveSelectionHandleHit(bounds, point, this.getSelectionHandleHitOptions(pageNumber));
 	}
 	private getSelectedTargetHit(pageNumber: number, point: AnnotationPoint): SelectedTarget | null {
 		if (!this.annotationDocument) {

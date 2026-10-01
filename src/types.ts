@@ -74,6 +74,8 @@ export interface PDFAnnotatorSettings {
 	inkRenderSettings: InkRenderSettings;
 	legacyInkRenderSettings?: InkRenderSettings;
 	autosaveDelayMs: number;
+	/** Keep "<name> (annotated).pdf" up to date when an annotated PDF is closed. */
+	keepAnnotatedCopy: boolean;
 }
 
 export interface AnnotationPoint {

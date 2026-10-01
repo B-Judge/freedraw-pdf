@@ -13,7 +13,7 @@ The PDF is open on the left. On the right, an Obsidian note displays an annotate
 - Move, resize, duplicate, and reorder annotations. Erase whole objects or parts of a stroke.
 - Insert blank, ruled, grid, or dotted pages between PDF pages, with a choice of paper colours and sizes.
 - Show an annotated page or selected region inside a Markdown note.
-- Export the document, added pages, and annotations as a separate PDF.
+- Keep an annotated copy of the PDF up to date automatically, with your annotations drawn in.
 
 ## Install
 
@@ -32,7 +32,7 @@ Open a PDF and choose **Annotate** from its toolbar or the command palette. Sele
 
 The toolbar sits inside Obsidian's PDF toolbar when available. You can choose a floating toolbar in the plugin settings.
 
-To add writing space, open the page menu and insert a template page. The **Pages** menu lets you navigate, rename, duplicate, and manage pages. For sharing, use the export command in the overflow menu.
+To add writing space, open the page menu and insert a template page. The **Pages** menu lets you navigate, rename, duplicate, and manage pages. For sharing, use the annotated copy described below.
 
 If you want to scroll with your finger and write with a pen, set **Finger input** to **Pan with finger**. Pen, highlighter, eraser, and text preferences are also available in the plugin settings.
 
@@ -56,7 +56,9 @@ Change `path` to the PDF's location within your vault and `page` to the page you
 
 Freedraw PDF stores editable annotations in a companion `.annot.json` file beside the PDF. Keep both files when backing up or transferring your work. Imported annotation images are stored with the annotation data.
 
-Export creates a separate, flattened PDF. The exported annotations are part of the page image; keep the original PDF and annotation file if you want to edit them again in Freedraw PDF.
+When you close a PDF you have annotated, Freedraw PDF updates a single copy beside it named `<name> (annotated).pdf`, with your annotations drawn on the pages. Each update replaces the previous copy. The copy keeps the original pages, so their text stays selectable and searchable; added pages are included and removed pages are left out. To update the copy without closing the PDF, choose **Update annotated copy** in the overflow menu or the command palette. You can turn off automatic updates with **Annotated copy** under **Saving and feedback** in the plugin settings.
+
+The annotated copy is for reading and sharing. To keep editing, open the original PDF: its annotations stay editable in the `.annot.json` file, and the original PDF itself is never changed. Copies are not updated when Obsidian quits, so close the PDF tab or use **Update annotated copy** first. A PDF that cannot be edited, such as a password-protected one, is exported with its pages saved as images.
 
 The plugin does not require an account or use analytics. Your vault's storage, backup, and sync settings determine where its files are kept.
 

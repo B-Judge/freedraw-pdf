@@ -44,7 +44,7 @@ assertContains("main.ts", mainTs, "canvas.height = renderDimensions.height", "bl
 assertContains("main.ts", mainTs, "annotationDocument.nativePageTemplatesEditable = true", "blank PDFs must be marked as plugin-created before enabling native template controls");
 assertContains("main.ts", mainTs, "annotationDocument.pdfPageTemplates =", "blank PDFs must store editable native-page template metadata");
 
-assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "getNotebookPageRenderDimensions(syntheticPage.pageSize, EXPORT_PAGE_WIDTH_PX)", "synthetic mixed export must use shared render dimensions");
+assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "getNotebookPageRenderDimensions(syntheticPage.pageSize, pageWidthPx)", "synthetic mixed export must use shared render dimensions");
 assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "drawTemplatePageBackground(context, canvas.width, canvas.height, syntheticPage)", "synthetic mixed export must use the shared template renderer");
 assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "hasEditableNativePageTemplates(annotationDocument, realPdfPageCount)", "native PDF export must only apply templates to plugin-created PDFs");
 

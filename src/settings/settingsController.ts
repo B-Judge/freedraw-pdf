@@ -1,7 +1,7 @@
 import { DEFAULT_SETTINGS, clampToolWidth, normalizeToolPresets } from "../config";
 import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
 
-type BehaviorSettingKeys = "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs";
+type BehaviorSettingKeys = "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs" | "keepAnnotatedCopy";
 
 function normalizeInkInputPolicy(value: unknown): InkInputPolicy {
 	if (value === "pen-mouse-stylus-touch") {
@@ -102,7 +102,8 @@ export class PDFAnnotatorSettingsController {
 			livePreviewMode: normalizeLivePreviewMode(loadedLivePreviewMode),
 			inkRenderSettings,
 			legacyInkRenderSettings: normalizeInkRenderSettings(loaded?.legacyInkRenderSettings ?? inkRenderSettings),
-			autosaveDelayMs: typeof loaded?.autosaveDelayMs === "number" ? loaded.autosaveDelayMs : DEFAULT_SETTINGS.autosaveDelayMs
+			autosaveDelayMs: typeof loaded?.autosaveDelayMs === "number" ? loaded.autosaveDelayMs : DEFAULT_SETTINGS.autosaveDelayMs,
+			keepAnnotatedCopy: typeof loaded?.keepAnnotatedCopy === "boolean" ? loaded.keepAnnotatedCopy : DEFAULT_SETTINGS.keepAnnotatedCopy
 		};
 		if (!loaded?.legacyInkRenderSettings || shouldMigrateLegacyPressure || shouldMigrateLegacyPreview || JSON.stringify(loaded?.presets ?? []) !== JSON.stringify(normalizedPresets)) {
 			this.scheduleSave();
@@ -155,6 +156,10 @@ export class PDFAnnotatorSettingsController {
 
 	shouldShowAnnotatedEmbedHeader(): boolean {
 		return this.settings.showAnnotatedEmbedHeader;
+	}
+
+	shouldKeepAnnotatedCopy(): boolean {
+		return this.settings.keepAnnotatedCopy;
 	}
 
 	shouldShowDrawingNotices(): boolean {
@@ -229,7 +234,8 @@ export class PDFAnnotatorSettingsController {
 			inkInputPolicy: DEFAULT_SETTINGS.inkInputPolicy,
 			livePreviewMode: DEFAULT_SETTINGS.livePreviewMode,
 			inkRenderSettings: { ...DEFAULT_SETTINGS.inkRenderSettings },
-			autosaveDelayMs: DEFAULT_SETTINGS.autosaveDelayMs
+			autosaveDelayMs: DEFAULT_SETTINGS.autosaveDelayMs,
+			keepAnnotatedCopy: DEFAULT_SETTINGS.keepAnnotatedCopy
 		};
 	}
 

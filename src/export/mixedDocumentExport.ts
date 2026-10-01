@@ -5,7 +5,7 @@ import { drawTemplatePageBackground } from "../notebook/templateCanvas";
 import { loadNativePdfJs, type NativePdfDocument } from "../pdf/nativePdfJs";
 import { dataUrlToArrayBuffer, getBaseName } from "../utils/general";
 import { buildPdfFromJpegPages, type PdfImagePage } from "./simplePdfWriter";
-import type { AnnotationDocument, MixedPageEntry } from "../types";
+import type { AnnotationDocument, MixedPageEntry, NotebookPageSize } from "../types";
 
 const EXPORT_PAGE_WIDTH_PX = 1600;
 const EXPORT_JPEG_QUALITY = 0.92;
@@ -33,6 +33,14 @@ async function createUniquePdfFile(app: App, sourceFile: TFile, bytes: Uint8Arra
 	return app.vault.createBinary(outputPath, buffer);
 }
 
+/** Physical size, in PDF points, of an inserted notebook page of the given size. */
+export function getSyntheticPagePointSize(pageSize: NotebookPageSize): { widthPt: number; heightPt: number } {
+	const dimensions = getNotebookPageSizeDimensions(pageSize);
+	const widthPt = pageSize === "letter" ? 612 : 595.276 * dimensions.width / 920;
+	const heightPt = pageSize === "letter" ? 792 : widthPt * dimensions.height / dimensions.width;
+	return { widthPt, heightPt };
+}
+
 function canvasToJpegPage(canvas: HTMLCanvasElement): PdfImagePage {
 	const jpegBytes = uint8FromArrayBuffer(dataUrlToArrayBuffer(canvas.toDataURL("image/jpeg", EXPORT_JPEG_QUALITY)));
 	return {
@@ -42,13 +50,13 @@ function canvasToJpegPage(canvas: HTMLCanvasElement): PdfImagePage {
 	};
 }
 
-async function renderSyntheticPageToCanvas(annotationDocument: AnnotationDocument, pageNumber: number, realPdfPageCount: number, includeAnnotations: boolean): Promise<HTMLCanvasElement> {
+export async function renderSyntheticPageToCanvas(annotationDocument: AnnotationDocument, pageNumber: number, realPdfPageCount: number, includeAnnotations: boolean, pageWidthPx = EXPORT_PAGE_WIDTH_PX): Promise<HTMLCanvasElement> {
 	const syntheticIndex = pageNumber - realPdfPageCount - 1;
 	const syntheticPage = annotationDocument.appendedPages?.[syntheticIndex];
 	if (!syntheticPage) {
 		throw new Error(`Missing inserted notebook page ${pageNumber}.`);
 	}
-	const dimensions = getNotebookPageRenderDimensions(syntheticPage.pageSize, EXPORT_PAGE_WIDTH_PX);
+	const dimensions = getNotebookPageRenderDimensions(syntheticPage.pageSize, pageWidthPx);
 	const canvas = createEl("canvas");
 	canvas.width = dimensions.width;
 	canvas.height = dimensions.height;
@@ -102,7 +110,7 @@ async function renderPdfPageToCanvas(pdfDocument: NativePdfDocument, annotationD
 	return canvas;
 }
 
-async function renderMixedPagesToPdfBytes(
+export async function renderMixedPagesToPdfBytes(
 	app: App,
 	sourceFile: TFile,
 	annotationDocument: AnnotationDocument,
@@ -135,9 +143,9 @@ async function renderMixedPagesToPdfBytes(
 				imagePage.heightPt = physical.height;
 			} else {
 				const pageSize = annotationDocument.appendedPages?.[entry.pageNumber - pdfDocument.numPages - 1]?.pageSize ?? "a4";
-				const dimensions = getNotebookPageSizeDimensions(pageSize);
-				imagePage.widthPt = pageSize === "letter" ? 612 : 595.276 * dimensions.width / 920;
-				imagePage.heightPt = pageSize === "letter" ? 792 : imagePage.widthPt * dimensions.height / dimensions.width;
+				const pointSize = getSyntheticPagePointSize(pageSize);
+				imagePage.widthPt = pointSize.widthPt;
+				imagePage.heightPt = pointSize.heightPt;
 			}
 			pages.push(imagePage);
 			canvas.width = 0;
@@ -150,30 +158,6 @@ async function renderMixedPagesToPdfBytes(
 		};
 	} finally {
 		await loadingTask.destroy();
-	}
-}
-
-export async function exportAnnotatedMixedDocumentPdf(
-	app: App,
-	sourceFile: TFile,
-	annotationDocument: AnnotationDocument,
-	mixedEntries: MixedPageEntry[],
-	realPdfPageCount: number
-): Promise<TFile | null> {
-	if (mixedEntries.length === 0) {
-		new Notice("No pages available to export.");
-		return null;
-	}
-
-	try {
-		const { pdfBytes } = await renderMixedPagesToPdfBytes(app, sourceFile, annotationDocument, mixedEntries, realPdfPageCount, true);
-		const outputFile = await createUniquePdfFile(app, sourceFile, pdfBytes, "annotated mixed");
-		new Notice(`Exported ${outputFile.name}`);
-		return outputFile;
-	} catch (error) {
-		console.error("freedraw-pdf: failed to export mixed annotated PDF", error);
-		new Notice("Could not export annotated mixed PDF.");
-		return null;
 	}
 }
 

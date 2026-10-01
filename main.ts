@@ -43,7 +43,8 @@ import { drawTemplatePageBackground } from "./src/notebook/templateCanvas";
 import { getCoalescedPointerEvents, isInkDrawingTool, isWebKitStylusTouch, resolvePointerPressure, shouldCaptureInkPointerEvent, shouldIgnoreInkPointerEvent, shouldPanInkPointerEvent } from "./src/pointer/pointerInput";
 import { PDFAnnotatorSettingsController } from "./src/settings/settingsController";
 import { PDFAnnotatorSettingTab } from "./src/settings/settingTab";
-import { createNativeMixedWorkingPdf, exportAnnotatedMixedDocumentPdf } from "./src/export/mixedDocumentExport";
+import { documentHasExportableContent, exportAnnotatedCopy, getAnnotatedCopyPath, isAnnotatedCopyCurrent, isAnnotatedCopyPath, type AnnotatedCopyRequest, type AnnotatedCopyResult } from "./src/export/annotatedCopyExport";
+import { createNativeMixedWorkingPdf } from "./src/export/mixedDocumentExport";
 import { buildPdfFromJpegPages } from "./src/export/simplePdfWriter";
 import {
 	INLINE_TEXT_LINE_HEIGHT,
@@ -690,6 +691,11 @@ class NativePdfAnnotatorSession {
 				this.finishSessionInlineTextEditor(true);
 				await this.flushSave();
 				if (this.isDirty) { throw new Error("Save the current annotations before switching PDFs."); }
+				// The previous PDF is being closed and its annotations are saved.
+				const closingCopyRequest = this.createAnnotatedCopyRequest();
+				if (closingCopyRequest) {
+					void this.plugin.refreshAnnotatedCopy(closingCopyRequest, "close");
+				}
 				const loadInfo = await this.store.loadWithInfo(nextFile);
 				if (generation !== this.attachmentGeneration || this.getPdfFile()?.path !== nextFile.path) { return; }
 				this.file = nextFile;
@@ -788,9 +794,14 @@ class NativePdfAnnotatorSession {
 		const closingFile = this.file;
 		const closingDocument = this.annotationDocument;
 		const closingDirty = this.isDirty;
+		const closingCopyRequest = this.createAnnotatedCopyRequest();
 		void this.flushSave().then(async () => {
 			if (closingDirty && closingFile && closingDocument) {
 				await this.store.save(closingFile, closingDocument);
+			}
+			// Only after the annotations are safely saved: refresh the annotated copy.
+			if (closingCopyRequest) {
+				void this.plugin.refreshAnnotatedCopy(closingCopyRequest, "close");
 			}
 		}).catch(async () => {
 			if (closingFile && closingDocument) { await this.preserveFailedSave(closingFile, closingDocument); }
@@ -1069,25 +1080,41 @@ class NativePdfAnnotatorSession {
 		if (this.realPdfPageCount <= 0) {
 			this.syncPages();
 		}
-		const entries = this.getMixedPageEntries();
-		if (entries.length === 0) {
-			new Notice("No pages available to export.");
+		this.commitActiveInkBeforeLayoutRefresh();
+		this.finishSessionInlineTextEditor(true);
+		await this.flushSave();
+		const request = this.createAnnotatedCopyRequest();
+		if (!request) {
+			new Notice("No pages available to export yet. Try again once the PDF has finished loading.");
 			return null;
 		}
-		await this.flushSave();
-		this.refreshStatus("Exporting annotated mixed PDF...", 6000);
-		const outputFile = await exportAnnotatedMixedDocumentPdf(
-			this.plugin.app,
-			this.file,
-			this.annotationDocument,
-			entries,
-			this.realPdfPageCount
-		);
-		if (outputFile) {
-			this.refreshStatus(`Exported ${outputFile.name}`);
-			await this.plugin.openPdfFileAtPage(outputFile, 1);
+		this.refreshStatus(`Updating ${getAnnotatedCopyPath(request.sourceFile)}...`, 8000);
+		const result = await this.plugin.refreshAnnotatedCopy(request, "manual");
+		if (result) {
+			this.refreshStatus(`Updated ${result.file.name}`);
 		}
-		return outputFile;
+		return result?.file ?? null;
+	}
+
+	/**
+	 * Snapshot of what the annotated copy needs, taken while this PDF is still
+	 * open (page order depends on the loaded page count).
+	 */
+	private createAnnotatedCopyRequest(): AnnotatedCopyRequest | null {
+		if (!this.file || !this.annotationDocument || this.realPdfPageCount <= 0) {
+			return null;
+		}
+		const entries = this.getMixedPageEntries();
+		if (entries.length === 0) {
+			return null;
+		}
+		return {
+			sourceFile: this.file,
+			document: cloneDocument(this.annotationDocument),
+			entries,
+			realPdfPageCount: this.realPdfPageCount,
+			sidecarPath: this.store.getSidecarPath(this.file)
+		};
 	}
 
 	async materializeNativeMixedWorkingPdf(): Promise<TFile | null> {
@@ -7249,7 +7276,7 @@ class NativePdfAnnotatorSession {
 			.setIcon("image-file")
 			.onClick(() => void this.exportCurrentPageSnapshot()));
 		menu.addItem((item) => item
-			.setTitle("Annotated mixed PDF")
+			.setTitle("Update annotated copy")
 			.setIcon("file-output")
 			.onClick(() => void this.exportAnnotatedMixedDocumentPdf()));
 		menu.addSeparator();
@@ -7263,10 +7290,6 @@ class NativePdfAnnotatorSession {
 				.setIcon("replace")
 				.onClick(() => void this.relinkAnnotationDataToCurrentPdf()));
 		}
-		menu.addItem((item) => item
-			.setTitle("Create native mixed working PDF")
-			.setIcon("file-plus-2")
-			.onClick(() => void this.materializeNativeMixedWorkingPdf()));
 		const rect = button.getBoundingClientRect();
 		this.showExclusiveMenuAtPosition(menu, { x: rect.left, y: rect.bottom + 6 });
 	}
@@ -7358,7 +7381,7 @@ class NativePdfAnnotatorSession {
 		}
 		menu.addSeparator();
 		menu.addItem((item) => item
-			.setTitle("Export annotated PDF")
+			.setTitle("Update annotated copy")
 			.setIcon("file-output")
 			.onClick(() => void this.exportAnnotatedMixedDocumentPdf()));
 		const rect = button.getBoundingClientRect();
@@ -12521,6 +12544,8 @@ export default class PDFAnnotatorPlugin extends Plugin {
 	private settingsController!: PDFAnnotatorSettingsController;
 	private sessions = new Map<WorkspaceLeaf, NativePdfAnnotatorSession>();
 	private clipboard: AnnotationClipboardPayload | null = null;
+	private readonly annotatedCopyJobs = new Map<string, Promise<AnnotatedCopyResult | null>>();
+	private unloading = false;
 
 	async onload(): Promise<void> {
 		this.settingsController = new PDFAnnotatorSettingsController(
@@ -12583,7 +12608,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 				{ id: "copy-current-page-pdf-link", name: "Copy current PDF page link", run: (session) => session.copyCurrentPageLink() },
 				{ id: "open-active-pdf-annotation-json", name: "Open active PDF annotation data JSON", run: (session) => session.openAnnotationDataJson() },
 				{ id: "export-current-page-snapshot", name: "Export current annotated page as PNG", run: (session) => session.exportCurrentPageSnapshot() },
-				{ id: "export-annotated-mixed-pdf", name: "Export annotated mixed PDF", run: (session) => session.exportAnnotatedMixedDocumentPdf() },
+				{ id: "export-annotated-mixed-pdf", name: "Update annotated copy (PDF with annotations drawn in)", run: (session) => session.exportAnnotatedMixedDocumentPdf() },
 				{ id: "create-native-mixed-working-pdf", name: "Advanced: create native mixed working PDF", run: (session) => session.materializeNativeMixedWorkingPdf() },
 				{ id: "insert-native-notebook-page-after-current", name: "Add temporary template page after current PDF page", run: (session) => session.openTemplatePageInsertModal("after") },
 				{ id: "insert-native-notebook-page-before-current", name: "Add temporary template page before current PDF page", run: (session) => session.openTemplatePageInsertModal("before") }
@@ -12703,6 +12728,9 @@ export default class PDFAnnotatorPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		// Closing Obsidian can end the process mid-write, so files closed by
+		// unloading do not start an annotated-copy export.
+		this.unloading = true;
 		this.settingsController.dispose();
 		for (const session of this.sessions.values()) {
 			session.detach();
@@ -12827,6 +12855,61 @@ export default class PDFAnnotatorPlugin extends Plugin {
 
 	shouldShowDrawingNotices(): boolean {
 		return this.settingsController.shouldShowDrawingNotices();
+	}
+
+	shouldKeepAnnotatedCopy(): boolean {
+		return this.settingsController.shouldKeepAnnotatedCopy();
+	}
+
+	/**
+	 * Writes "<name> (annotated).pdf" for a PDF, replacing the previous copy.
+	 * Exports for the same PDF run one at a time. When a file is closed the copy
+	 * is only rebuilt if the saved annotations or the PDF changed since it was
+	 * last written; a manual export always rebuilds it. The source PDF and its
+	 * annotation data are never modified.
+	 */
+	refreshAnnotatedCopy(request: AnnotatedCopyRequest, trigger: "close" | "manual"): Promise<AnnotatedCopyResult | null> {
+		const key = request.sourceFile.path;
+		const previous = this.annotatedCopyJobs.get(key) ?? Promise.resolve();
+		const job = previous.catch(() => undefined).then(async (): Promise<AnnotatedCopyResult | null> => {
+			if (isAnnotatedCopyPath(request.sourceFile.path)) {
+				if (trigger === "manual") {
+					new Notice("This PDF is already an annotated copy. Export from the original PDF instead.");
+				}
+				return null;
+			}
+			if (!(this.app.vault.getAbstractFileByPath(request.sourceFile.path) instanceof TFile)) {
+				return null;
+			}
+			if (trigger === "close") {
+				if (this.unloading || !this.shouldKeepAnnotatedCopy()) {
+					return null;
+				}
+				const copyExists = this.app.vault.getAbstractFileByPath(getAnnotatedCopyPath(request.sourceFile)) instanceof TFile;
+				if (!copyExists && !documentHasExportableContent(request.document)) {
+					return null;
+				}
+				if (await isAnnotatedCopyCurrent(this.app, request.sourceFile, request.sidecarPath)) {
+					return null;
+				}
+			}
+			const result = await exportAnnotatedCopy(this.app, request);
+			new Notice(result.preservedOriginalPages
+				? `Updated ${result.file.name}`
+				: `Updated ${result.file.name}. The original PDF could not be edited, so its pages were saved as images.`, result.preservedOriginalPages ? 3000 : 8000);
+			return result;
+		}).catch((error: unknown) => {
+			console.error("freedraw-pdf: could not update annotated copy", error);
+			new Notice(`Could not update the annotated copy of ${request.sourceFile.name}: ${error instanceof Error ? error.message : String(error)}`, 8000);
+			return null;
+		});
+		this.annotatedCopyJobs.set(key, job);
+		void job.finally(() => {
+			if (this.annotatedCopyJobs.get(key) === job) {
+				this.annotatedCopyJobs.delete(key);
+			}
+		});
+		return job;
 	}
 
 	shouldShowRenderTelemetry(): boolean {
@@ -12957,7 +13040,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		this.settingsController.updateTextColor(color);
 	}
 
-	async updateBehaviorSettings(nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs">>): Promise<void> {
+	async updateBehaviorSettings(nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs" | "keepAnnotatedCopy">>): Promise<void> {
 		await this.settingsController.updateBehaviorSettings(nextSettings);
 	}
 

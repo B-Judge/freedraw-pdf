@@ -15,6 +15,13 @@ function assertContains(fileName, content, needle, message) {
 	}
 }
 
+function assertOccurrenceAtLeast(fileName, content, needle, minCount, message) {
+	const count = content.split(needle).length - 1;
+	if (count < minCount) {
+		throw new Error(`${fileName}: ${message}\nExpected at least ${minCount}, found ${count}: ${needle}`);
+	}
+}
+
 function assertNotContains(fileName, content, needle, message) {
 	if (content.includes(needle)) {
 		throw new Error(`${fileName}: ${message}\nUnexpected: ${needle}`);
@@ -42,17 +49,28 @@ assertContains("main.ts", mainTs, "hasEditableNativePageTemplates(this.annotatio
 assertContains("main.ts", mainTs, "await this.store.save(pdfFile, annotationDocument)", "scratch native PDF must save the annotation sidecar");
 
 assertContains("main.ts", mainTs, "id: \"export-annotated-mixed-pdf\"", "mixed annotated PDF export command must be registered");
-assertContains("main.ts", mainTs, "Export annotated mixed PDF", "mixed annotated PDF export must be visible");
-assertContains("main.ts", mainTs, "await this.plugin.openPdfFileAtPage(outputFile, 1)", "mixed annotated PDF export should open the generated PDF");
-assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "export async function exportAnnotatedMixedDocumentPdf", "mixed annotated PDF export implementation must exist");
-assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "renderMixedPagesToPdfBytes(app, sourceFile, annotationDocument, mixedEntries, realPdfPageCount, true)", "mixed export must include annotations");
-assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "\"annotated mixed\"", "mixed export must write a separate annotated PDF");
+// Annotated copy: one "<name> (annotated).pdf" next to the source, rebuilt in
+// place, kept up to date when the PDF is closed, and never touching the source
+// PDF or its sidecar.
+const annotatedCopyTs = read("src/export/annotatedCopyExport.ts");
+assertContains("main.ts", mainTs, "Update annotated copy (PDF with annotations drawn in)", "annotated copy export must be visible in the command palette");
+assertContains("src/export/annotatedCopyExport.ts", annotatedCopyTs, "export const ANNOTATED_COPY_SUFFIX = \" (annotated)\";", "the annotated copy must use one stable name");
+assertContains("src/export/annotatedCopyExport.ts", annotatedCopyTs, "await app.vault.modifyBinary(existing, buffer);", "the annotated copy must replace the previous copy instead of creating numbered files");
+assertContains("src/export/annotatedCopyExport.ts", annotatedCopyTs, "if (path === sourceFile.path) {", "the annotated copy must never overwrite its source PDF");
+assertNotContains("src/export/annotatedCopyExport.ts", annotatedCopyTs, "store.save", "exporting must not write annotation data");
+assertContains("src/export/annotatedCopyExport.ts", annotatedCopyTs, "pdf = await PDFDocument.load(sourceBytes, { updateMetadata: false });", "the annotated copy must keep the original pages instead of rasterizing them");
+assertContains("src/export/annotatedCopyExport.ts", annotatedCopyTs, "renderMixedPagesToPdfBytes(app, sourceFile, document, entries, realPdfPageCount, true)", "PDFs that cannot be edited must still export with annotations");
+assertContains("main.ts", mainTs, "void this.plugin.refreshAnnotatedCopy(closingCopyRequest, \"close\");", "closing an annotated PDF must refresh its annotated copy");
+assertOccurrenceAtLeast("main.ts", mainTs, "const closingCopyRequest = this.createAnnotatedCopyRequest();", 2, "both closing a tab and switching PDFs must refresh the annotated copy");
+assertContains("main.ts", mainTs, "if (await isAnnotatedCopyCurrent(this.app, request.sourceFile, request.sidecarPath)) {", "closing must skip the export when the copy is already up to date");
+assertContains("main.ts", mainTs, "if (isAnnotatedCopyPath(request.sourceFile.path)) {", "an annotated copy must never produce a copy of itself");
+assertContains("main.ts", mainTs, "this.unloading = true;", "quitting Obsidian must not start a partial export");
 
 assertContains("main.ts", mainTs, "id: \"insert-native-notebook-page-after-current\"", "temporary insertion-after command must remain registered");
 assertContains("main.ts", mainTs, "id: \"insert-native-notebook-page-before-current\"", "temporary insertion-before command must remain registered");
 assertContains("main.ts", mainTs, "openTemplatePageInsertModal", "default insertion must use the configurable temporary-page modal path");
 assertContains("main.ts", mainTs, "Quick add after current", "temporary insertion must be visible in menus");
-assertContains("main.ts", mainTs, "Annotated mixed PDF", "finished-PDF export must be visible in the page workflow");
+assertContains("main.ts", mainTs, ".setTitle(\"Update annotated copy\")", "finished-PDF export must be visible in the page workflow");
 assertContains("main.ts", mainTs, "deleteCurrentPdfPageFromSession", "current original PDF pages must be deletable non-destructively from the session");
 assertContains("main.ts", mainTs, "deletedPdfPages", "deleted original PDF pages must be tracked in the sidecar");
 assertContains("main.ts", mainTs, "isPdfPageDeleted(pageNumber, document)", "deleted original PDF pages must be omitted from mixed page entries");
@@ -132,7 +150,7 @@ assertContains("package.json", JSON.stringify(packageJson.scripts), "check:mixed
 
 if (builtMain) {
 	assertContains("main.js", builtMain, "Create blank annotatable PDF", "built bundle must include scratch native PDF workflow");
-	assertContains("main.js", builtMain, "Export annotated mixed PDF", "built bundle must include mixed annotated PDF export");
+	assertContains("main.js", builtMain, "Update annotated copy", "built bundle must include the annotated copy export");
 	assertContains("main.js", builtMain, "Quick add after current", "built bundle must include temporary page insertion");
 	assertContains("main.js", builtMain, "Remove PDF page from session", "built bundle must include recoverable session-level PDF page removal");
 	assertContains("main.js", builtMain, "Delete permanently", "built bundle must include removed-page cleanup");
@@ -333,3 +351,62 @@ console.log(
 	+ `removed=${document.removedPages.length}; strokes=${document.strokes.length}; `
 	+ "lifecycleMatrix=all-annotation-types"
 );
+
+// Annotated copy overlay placement: the overlay must exactly cover the crop box
+// and its top-left corner must land on the corner a viewer shows at top-left
+// after applying /Rotate.
+{
+	const ts = require("typescript");
+	const vm = require("vm");
+	const placementSource = ts.transpileModule(read("src/export/overlayPlacement.ts"), {
+		compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2018 }
+	}).outputText;
+	const placementModule = { exports: {} };
+	vm.runInNewContext(placementSource, { module: placementModule, exports: placementModule.exports, Math }, { filename: "overlayPlacement.check.cjs" });
+	const { getOverlayPlacement, getOverlayPixelSize, normalizePageRotation } = placementModule.exports;
+	const crop = { x: 50, y: 60, width: 500, height: 600 };
+	const transform = (placement, u, v) => {
+		const radians = placement.rotateDegrees * Math.PI / 180;
+		const a = u * placement.width;
+		const b = v * placement.height;
+		return {
+			x: placement.x + a * Math.cos(radians) - b * Math.sin(radians),
+			y: placement.y + a * Math.sin(radians) + b * Math.cos(radians)
+		};
+	};
+	const close = (first, second) => Math.abs(first - second) < 1e-6;
+	const expectedTopLeft = {
+		0: { x: crop.x, y: crop.y + crop.height },
+		90: { x: crop.x, y: crop.y },
+		180: { x: crop.x + crop.width, y: crop.y },
+		270: { x: crop.x + crop.width, y: crop.y + crop.height }
+	};
+	for (const rotation of [0, 90, 180, 270, -90, 450]) {
+		const placement = getOverlayPlacement(crop, rotation);
+		const corners = [[0, 0], [1, 0], [0, 1], [1, 1]].map(([u, v]) => transform(placement, u, v));
+		const xs = corners.map((corner) => corner.x);
+		const ys = corners.map((corner) => corner.y);
+		if (!close(Math.min(...xs), crop.x) || !close(Math.max(...xs), crop.x + crop.width) || !close(Math.min(...ys), crop.y) || !close(Math.max(...ys), crop.y + crop.height)) {
+			throw new Error(`Overlay for /Rotate ${rotation} does not exactly cover the crop box`);
+		}
+		const topLeft = transform(placement, 0, 1);
+		const expected = expectedTopLeft[normalizePageRotation(rotation)];
+		if (!close(topLeft.x, expected.x) || !close(topLeft.y, expected.y)) {
+			throw new Error(`Overlay for /Rotate ${rotation} is not oriented like the displayed page`);
+		}
+		const quarterTurn = normalizePageRotation(rotation) % 180 !== 0;
+		if (placement.displayWidthPt !== (quarterTurn ? crop.height : crop.width)) {
+			throw new Error(`Overlay for /Rotate ${rotation} must be rendered at the displayed page size`);
+		}
+	}
+	const letter = getOverlayPixelSize(612, 792);
+	if (letter.widthPx !== 1530 || letter.heightPx !== 1980) {
+		throw new Error(`Letter overlays must render at 2.5 px/pt, got ${letter.widthPx}x${letter.heightPx}`);
+	}
+	const poster = getOverlayPixelSize(2384, 3370);
+	if (Math.max(poster.widthPx, poster.heightPx) > 3200) {
+		throw new Error("Very large pages must cap the overlay size to bound memory use");
+	}
+}
+
+console.log("Annotated copy export verified.");

@@ -15,6 +15,7 @@ export interface PDFAnnotatorSettingsHost {
 	shouldAutoCopyRegionEmbed(): boolean;
 	shouldShowAnnotatedEmbedHeader(): boolean;
 	shouldShowDrawingNotices(): boolean;
+	shouldKeepAnnotatedCopy(): boolean;
 	shouldShowRenderTelemetry(): boolean;
 	getInkInputPolicy(): InkInputPolicy;
 	getLivePreviewMode(): LivePreviewMode;
@@ -23,7 +24,7 @@ export interface PDFAnnotatorSettingsHost {
 	getToolDefaults(): ToolStateSnapshot;
 	getStoredPresets(): ToolPreset[];
 	updateBehaviorSettings(
-		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs">>
+		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs" | "keepAnnotatedCopy">>
 	): Promise<void>;
 	updateToolPreferences(snapshot: ToolStateSnapshot, presets: ToolPreset[]): void;
 }
@@ -113,6 +114,22 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 								.setValue(this.plugin.shouldShowAnnotatedEmbedHeader())
 								.onChange(async (value) => {
 									await this.plugin.updateBehaviorSettings({ showAnnotatedEmbedHeader: value });
+								});
+						});
+				}
+			},
+			{
+				name: "Annotated copy",
+				desc: "When you close an annotated PDF, update \"<name> (annotated).pdf\" next to it with your annotations drawn in. The original PDF and your editable annotations are never changed.",
+				render: (setting) => {
+					setting
+						.setName("Annotated copy")
+						.setDesc("When you close an annotated PDF, update \"<name> (annotated).pdf\" next to it with your annotations drawn in. The original PDF and your editable annotations are never changed.")
+						.addToggle((toggle) => {
+							toggle
+								.setValue(this.plugin.shouldKeepAnnotatedCopy())
+								.onChange(async (value) => {
+									await this.plugin.updateBehaviorSettings({ keepAnnotatedCopy: value });
 								});
 						});
 				}
@@ -478,6 +495,7 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 		);
 		this.renderSettingDefinitions(containerEl, definitions, [
 			"Save delay",
+			"Annotated copy",
 			"Action notices"
 		]);
 

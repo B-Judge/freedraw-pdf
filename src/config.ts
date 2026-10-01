@@ -118,7 +118,8 @@ export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
 		taperEnd: 0,
 		pressureMode: "auto"
 	},
-	autosaveDelayMs: 600
+	autosaveDelayMs: 600,
+	keepAnnotatedCopy: true
 };
 
 export function normalizeToolPresets(presets: ToolPreset[] | undefined): ToolPreset[] {

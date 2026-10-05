@@ -29,6 +29,7 @@ import { dataUrlToArrayBuffer, clamp, generateId, getBaseName } from "./src/util
 import { readClipboardText, writeClipboardText } from "./src/utils/clipboard";
 import { isEmbeddedImageDataUrl } from "./src/utils/imageData";
 import { isTabletWebKitTouchDevice } from "./src/utils/deviceUtils";
+import { applyPageOrder, canReorderPdfPages, isPageOrderAllowed, movePageInOrder, type PageMove } from "./src/notebook/pageOrder";
 import { NOTEBOOK_PAGE_SIZES, NOTEBOOK_TEMPLATES, createTemplateNotebookPage, getNotebookPageRenderDimensions, getNotebookPageSizeDimensions, getNotebookPageSizeLabel, getNotebookTemplateLabel, hasEditableNativePageTemplates } from "./src/notebook/pageModel";
 import {
 	hidePdfPage,
@@ -91,6 +92,7 @@ import type {
 	MixedPageEntry,
 	NormalizedRect,
 	NotebookPage,
+	NewPageFormatSettings,
 	NotebookPageSize,
 	NotebookTemplate,
 	PDFAnnotatorSettings,
@@ -461,6 +463,7 @@ class NativePdfAnnotatorSession {
 	private activeNativeMenu: Menu | null = null;
 	private pageListFilter: "all" | "added" | "removed" = "all";
 	private pageListQuery = "";
+	private pageListReorderMode = false;
 	private nativeMixedPageInputEl: HTMLInputElement | null = null;
 	private nativeMixedPageCountEl: HTMLElement | null = null;
 	private inlineTextEditorEl: HTMLTextAreaElement | null = null;
@@ -1178,13 +1181,74 @@ class NativePdfAnnotatorSession {
 	}
 
 	private getNativeInsertPageDefaults(position: "before" | "after", location = this.getNativeInsertPageLocation(position)): NativeInsertPageOptions {
-		const currentSyntheticPage = this.getCurrentSyntheticPage();
+		const format = this.resolveNewPageFormat();
 		return {
 			title: `Inserted page ${position} ${location.anchorLabel}`,
-			template: currentSyntheticPage?.template ?? "ruled",
-			pageSize: currentSyntheticPage?.pageSize ?? "a4",
-			paperColor: currentSyntheticPage?.paperColor ?? "#fffdf7"
+			template: format.template,
+			pageSize: format.pageSize,
+			paperColor: format.paperColor
 		};
+	}
+
+	/**
+	 * Format for a page added next to `pageNumber`. With "Match the current
+	 * page", an added page or a page of a plugin-made notebook lends its paper,
+	 * size, and color; an ordinary PDF page has none, so the configured format
+	 * is used. With "Always use", the configured format is used everywhere.
+	 */
+	private resolveNewPageFormat(pageNumber = this.currentPage): { template: NotebookTemplate; pageSize: NotebookPageSize; paperColor: string; matchedCurrentPage: boolean } {
+		const configured = this.plugin.getNewPageFormat();
+		if (configured.mode === "match") {
+			const syntheticIndex = this.getSyntheticPageIndex(pageNumber);
+			const syntheticPage = syntheticIndex >= 0 ? this.getAppendedPages()[syntheticIndex] ?? null : null;
+			if (syntheticPage) {
+				return { template: syntheticPage.template, pageSize: syntheticPage.pageSize, paperColor: syntheticPage.paperColor, matchedCurrentPage: true };
+			}
+			const pdfPageTemplate = this.canEditPdfPageTemplate(pageNumber) ? this.getPdfPageTemplate(pageNumber) : null;
+			if (pdfPageTemplate) {
+				return { template: pdfPageTemplate.template, pageSize: pdfPageTemplate.pageSize, paperColor: pdfPageTemplate.paperColor, matchedCurrentPage: true };
+			}
+		}
+		return { template: configured.template, pageSize: configured.pageSize, paperColor: configured.paperColor, matchedCurrentPage: false };
+	}
+
+	private describePageFormat(format: { template: NotebookTemplate; pageSize: NotebookPageSize; paperColor: string }): string {
+		const paper = PAPER_COLOR_PRESETS.find((preset) => preset.color.toLowerCase() === format.paperColor.toLowerCase())?.label ?? "custom color";
+		return `${getNotebookTemplateLabel(format.template)}, ${getNotebookPageSizeLabel(format.pageSize)}, ${paper.toLowerCase()}`;
+	}
+
+	/** Adds a page right after the current one, in the new-page format, with no dialog. */
+	quickAddPageAfterCurrent(): void {
+		if (!this.annotationDocument) {
+			new Notice("Open a PDF first.");
+			return;
+		}
+		if (this.realPdfPageCount <= 0) {
+			this.syncPages();
+		}
+		this.syncCurrentPageForPageAction();
+		const location = this.getNativeInsertPageLocation("after");
+		const format = this.resolveNewPageFormat();
+		this.insertTemplatePageAtLocation(location, { title: "", template: format.template, pageSize: format.pageSize, paperColor: format.paperColor });
+	}
+
+	private openNewPageFormatMenu(event: MouseEvent | KeyboardEvent, anchor: HTMLElement): void {
+		const format = this.plugin.getNewPageFormat();
+		const update = (patch: Partial<NewPageFormatSettings>): void => {
+			void this.plugin.updateBehaviorSettings({ newPageFormat: { ...this.plugin.getNewPageFormat(), ...patch } });
+		};
+		const menu = new Menu();
+		addMenuDescriptors(menu, [
+			{ title: "Match the current page", checked: format.mode === "match", run: () => update({ mode: "match" }) },
+			{ title: "Always use the format below", checked: format.mode === "fixed", run: () => update({ mode: "fixed" }) },
+			menuSeparator,
+			...NOTEBOOK_TEMPLATES.map((template) => ({ title: getNotebookTemplateLabel(template), icon: "rows-3", checked: format.template === template, run: () => update({ template }) })),
+			menuSeparator,
+			...NOTEBOOK_PAGE_SIZES.map((pageSize) => ({ title: getNotebookPageSizeLabel(pageSize), icon: "maximize-2", checked: format.pageSize === pageSize, run: () => update({ pageSize }) })),
+			menuSeparator,
+			...PAPER_COLOR_PRESETS.map((preset) => ({ title: preset.label, icon: "palette", checked: format.paperColor.toLowerCase() === preset.color.toLowerCase(), run: () => update({ paperColor: preset.color }) }))
+		]);
+		this.showMenuAtMenuEvent(menu, event, anchor);
 	}
 
 	private getNativeInsertPageLocation(position: "before" | "after"): NativeInsertPageLocation {
@@ -6072,11 +6136,12 @@ class NativePdfAnnotatorSession {
 		const anchor = insertAfterPdfPage === undefined
 			? this.realPdfPageCount
 			: clamp(Math.round(insertAfterPdfPage ?? this.realPdfPageCount), 0, Math.max(0, this.realPdfPageCount));
+		const fallbackFormat = this.resolveNewPageFormat();
 		const pageOptions = options ?? {
 			title: `Page ${this.realPdfPageCount + pages.length + 1}`,
-			template: this.getCurrentSyntheticPage()?.template ?? "ruled",
-			pageSize: this.getCurrentSyntheticPage()?.pageSize ?? "a4",
-			paperColor: this.getCurrentSyntheticPage()?.paperColor ?? "#fffdf7"
+			template: fallbackFormat.template,
+			pageSize: fallbackFormat.pageSize,
+			paperColor: fallbackFormat.paperColor
 		};
 		const nextPage = createTemplateNotebookPage(
 			pageOptions.title.trim() || `Page ${this.realPdfPageCount + pages.length + 1}`,
@@ -6580,7 +6645,7 @@ class NativePdfAnnotatorSession {
 		}, 0);
 	}
 
-	private openMixedPageEntryMenu(entry: MixedPageEntry, event: MouseEvent, anchor: HTMLElement): void {
+	private openMixedPageEntryMenu(entry: MixedPageEntry, event: MouseEvent, anchor: HTMLElement, listAnchor?: HTMLElement): void {
 		const openOrRestore = (): void => {
 			if (entry.isRemoved) {
 				if (entry.removedKind === "pdf") {
@@ -6628,6 +6693,34 @@ class NativePdfAnnotatorSession {
 			.setTitle("Export page snapshot")
 			.setIcon("image-file")
 			.onClick(() => void this.exportPageSnapshot(entry.pageNumber)));
+		menu.addSeparator();
+		const afterPageChange = (focusPageNumber: number | null): void => {
+			if (listAnchor) {
+				this.reopenPageListPopover(listAnchor, focusPageNumber);
+			}
+		};
+		const moves: Array<{ move: PageMove; title: string; icon: string }> = [
+			{ move: "top", title: "Move to start", icon: "arrow-up-to-line" },
+			{ move: "up", title: "Move up", icon: "chevron-up" },
+			{ move: "down", title: "Move down", icon: "chevron-down" },
+			{ move: "bottom", title: "Move to end", icon: "arrow-down-to-line" }
+		];
+		for (const { move, title, icon } of moves) {
+			menu.addItem((item) => item
+				.setTitle(title)
+				.setIcon(icon)
+				.setDisabled(!this.canMovePage(entry.pageNumber, move))
+				.onClick(() => afterPageChange(this.movePage(entry.pageNumber, move))));
+		}
+		menu.addSeparator();
+		menu.addItem((item) => item
+			.setTitle(`Add page before (${this.describePageFormat(this.resolveNewPageFormat(entry.pageNumber))})`)
+			.setIcon("arrow-up-from-line")
+			.onClick(() => afterPageChange(this.quickAddPageAt({ pageNumber: entry.pageNumber, position: "before" }))));
+		menu.addItem((item) => item
+			.setTitle(`Add page after (${this.describePageFormat(this.resolveNewPageFormat(entry.pageNumber))})`)
+			.setIcon("arrow-down-from-line")
+			.onClick(() => afterPageChange(this.quickAddPageAt({ pageNumber: entry.pageNumber, position: "after" }))));
 		menu.addSeparator();
 		if (entry.pageId) {
 			menu.addItem((item) => item
@@ -6813,7 +6906,103 @@ class NativePdfAnnotatorSession {
 		menu.showAtMouseEvent(event);
 	}
 
-	private openPageListPopover(anchor: HTMLElement): void {
+	private getVisiblePageOrder(): number[] {
+		return this.getMixedPageEntries().map((entry) => entry.pageNumber);
+	}
+
+	private canMovePage(pageNumber: number, move: PageMove): boolean {
+		if (!this.annotationDocument) {
+			return false;
+		}
+		const order = this.getVisiblePageOrder();
+		const next = movePageInOrder(order, pageNumber, move);
+		if (next.every((page, index) => page === order[index])) {
+			return false;
+		}
+		return isPageOrderAllowed(this.annotationDocument, this.realPdfPageCount, order, next);
+	}
+
+	/**
+	 * Moves a visible page (see src/notebook/pageOrder.ts). Added pages can go
+	 * anywhere; original PDF pages keep their order except in notebooks made by
+	 * this plugin. Returns the page's new number, or null if nothing moved.
+	 */
+	private movePage(pageNumber: number, move: PageMove): number | null {
+		if (!this.annotationDocument) {
+			return null;
+		}
+		this.finishSessionInlineTextEditor(true);
+		const order = this.getVisiblePageOrder();
+		const next = movePageInOrder(order, pageNumber, move);
+		if (next.every((page, index) => page === order[index])) {
+			return null;
+		}
+		if (!isPageOrderAllowed(this.annotationDocument, this.realPdfPageCount, order, next)) {
+			new Notice("Pages of the original PDF stay in their order. Added pages can be moved anywhere.");
+			return null;
+		}
+		this.pushHistory();
+		const result = applyPageOrder(this.annotationDocument, this.realPdfPageCount, order, next);
+		if (!result) {
+			this.undoStack.pop();
+			new Notice("Could not move that page. Reopen the page list and try again.");
+			return null;
+		}
+		const mapPage = (page: number): number => result.pageMap.get(page) ?? page;
+		const movedPageNumber = mapPage(pageNumber);
+		this.selectedTargets = [];
+		this.selectedTarget = null;
+		this.lastSelectionRegion = null;
+		this.nextPageZIndexCache.clear();
+		this.markDirtyAndRedraw(`Moved page ${move === "top" ? "to the top" : move === "bottom" ? "to the end" : move}`);
+		this.refreshSyntheticPages(movedPageNumber);
+		return movedPageNumber;
+	}
+
+	private getInsertLocationNextToPage(pageNumber: number, position: "before" | "after"): NativeInsertPageLocation {
+		const syntheticIndex = this.getSyntheticPageIndex(pageNumber);
+		const syntheticPage = syntheticIndex >= 0 ? this.getAppendedPages()[syntheticIndex] : null;
+		if (syntheticPage) {
+			return {
+				insertIndex: position === "before" ? syntheticIndex : syntheticIndex + 1,
+				anchor: this.getSyntheticPageInsertAfterPdfPage(syntheticPage),
+				anchorLabel: syntheticPage.title.trim() || `added page ${pageNumber}`
+			};
+		}
+		const anchor = clamp(position === "before" ? pageNumber - 1 : pageNumber, 0, Math.max(0, this.realPdfPageCount));
+		return {
+			insertIndex: position === "before" ? this.findSyntheticInsertIndexAfterPdfPage(anchor) : this.findFirstSyntheticInsertIndexAfterPdfPage(anchor),
+			anchor,
+			anchorLabel: `PDF page ${pageNumber}`
+		};
+	}
+
+	/** Adds a page in the new-page format before or after a page, or at the very start or end. */
+	private quickAddPageAt(target: { pageNumber: number; position: "before" | "after" } | "start" | "end"): number | null {
+		if (!this.annotationDocument) {
+			return null;
+		}
+		const pages = this.getAppendedPages();
+		const location: NativeInsertPageLocation = target === "start"
+			? { insertIndex: 0, anchor: 0, anchorLabel: "the start" }
+			: target === "end"
+				? { insertIndex: pages.length, anchor: Math.max(0, this.realPdfPageCount), anchorLabel: "the end" }
+				: this.getInsertLocationNextToPage(target.pageNumber, target.position);
+		const formatPage = typeof target === "object" ? target.pageNumber : this.currentPage;
+		const format = this.resolveNewPageFormat(formatPage);
+		this.insertTemplatePageAtLocation(location, { title: "", template: format.template, pageSize: format.pageSize, paperColor: format.paperColor });
+		return this.currentPage;
+	}
+
+	/** Rebuilds the open page list after a change, keeping its scroll position and focusing a page. */
+	private reopenPageListPopover(anchor: HTMLElement, focusPageNumber: number | null): void {
+		const previousList = anchor.ownerDocument.querySelector<HTMLElement>(".pdf-native-annotator-page-list-popover .pdf-native-annotator-page-list");
+		const previousScrollTop = previousList?.scrollTop ?? 0;
+		const liveAnchor = anchor.isConnected ? anchor : this.getPageMenuAnchor() ?? anchor;
+		this.openPageListPopover(liveAnchor, { scrollTop: previousScrollTop, focusPageNumber });
+	}
+
+	private openPageListPopover(anchor: HTMLElement, restore?: { scrollTop: number; focusPageNumber: number | null }): void {
 		const entries = this.getMixedPageEntries();
 		const removedEntries = this.getRemovedPageEntries();
 		if (entries.length === 0 && removedEntries.length === 0) {
@@ -6835,6 +7024,43 @@ class NativePdfAnnotatorSession {
 		overview.createSpan({
 			text: `${countByFilter.all} pages - ${countByFilter.added} added - ${countByFilter.annotated} annotated`
 		});
+		const pageActions = popover.createDiv({ cls: "pdf-native-annotator-page-list-page-actions" });
+		const createPageAction = (icon: string, text: string, label: string, onClick: () => void): HTMLButtonElement => {
+			const button = pageActions.createEl("button", { type: "button", cls: "pdf-native-annotator-page-list-page-action" });
+			setIcon(button.createSpan({ cls: "pdf-native-annotator-page-list-page-action-icon" }), icon);
+			button.createSpan({ text });
+			button.setAttribute("aria-label", label);
+			button.title = label;
+			button.addEventListener("click", (event) => {
+				event.preventDefault();
+				event.stopPropagation();
+				onClick();
+			});
+			return button;
+		};
+		createPageAction("arrow-up-to-line", "Add at start", "Add a page before the first page", () => {
+			const added = this.quickAddPageAt("start");
+			this.reopenPageListPopover(anchor, added);
+		});
+		createPageAction("arrow-down-to-line", "Add at end", "Add a page after the last page", () => {
+			const added = this.quickAddPageAt("end");
+			this.reopenPageListPopover(anchor, added);
+		});
+		const reorderToggle = createPageAction("arrow-up-down", this.pageListReorderMode ? "Done" : "Reorder", this.pageListReorderMode ? "Finish reordering pages" : "Reorder pages", () => {
+			this.pageListReorderMode = !this.pageListReorderMode;
+			this.reopenPageListPopover(anchor, this.currentPage);
+		});
+		reorderToggle.classList.toggle("is-active", this.pageListReorderMode);
+		reorderToggle.setAttribute("aria-pressed", String(this.pageListReorderMode));
+		if (this.pageListReorderMode) {
+			popover.classList.add("is-reordering");
+			popover.createDiv({
+				cls: "pdf-native-annotator-page-list-reorder-hint",
+				text: this.annotationDocument && canReorderPdfPages(this.annotationDocument, this.realPdfPageCount)
+					? "Use the arrows to move pages. Every page in this notebook can be moved."
+					: "Use the arrows to move pages. Added pages can go anywhere; pages of the original PDF stay in their order."
+			});
+		}
 		const filters = popover.createDiv({ cls: "pdf-native-annotator-page-list-filters" });
 		const searchWrap = popover.createDiv({ cls: "pdf-native-annotator-page-list-search" });
 		const searchInput = searchWrap.createEl("input", {
@@ -6847,14 +7073,15 @@ class NativePdfAnnotatorSession {
 		let currentFilteredEntries: typeof entries = [];
 		const renderList = (): void => {
 			list.replaceChildren();
-			const sourceEntries = this.pageListFilter === "removed" ? removedEntries : entries;
+			const reordering = this.pageListReorderMode;
+			const sourceEntries = !reordering && this.pageListFilter === "removed" ? removedEntries : entries;
 			const filteredEntries = sourceEntries.filter((entry) => {
-				if (this.pageListFilter === "added") {
+				if (!reordering && this.pageListFilter === "added") {
 					return entry.isAdded;
 				}
 				return true;
 			}).filter((entry) => {
-				const query = this.pageListQuery.trim().toLowerCase();
+				const query = reordering ? "" : this.pageListQuery.trim().toLowerCase();
 				if (!query) {
 					return true;
 				}
@@ -6873,6 +7100,7 @@ class NativePdfAnnotatorSession {
 			for (const entry of filteredEntries) {
 				const button = createDiv();
 				button.className = "menu-item pdf-native-annotator-page-list-item";
+				button.dataset.pageNumber = String(entry.pageNumber);
 				button.setAttribute("role", "button");
 				button.setAttribute("aria-label", `${entry.label}. ${entry.detail}`);
 				button.tabIndex = 0;
@@ -6930,6 +7158,14 @@ class NativePdfAnnotatorSession {
 						event.preventDefault();
 						jump();
 					}
+					if (reordering && event.altKey && !entry.isRemoved && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+						event.preventDefault();
+						const moved = this.movePage(entry.pageNumber, event.key === "ArrowUp" ? "up" : "down");
+						if (moved !== null) {
+							this.reopenPageListPopover(anchor, moved);
+						}
+						return;
+					}
 					if (event.key === "ArrowDown" || event.key === "ArrowUp") {
 						event.preventDefault();
 						const rows = Array.from(list.querySelectorAll<HTMLElement>(".pdf-native-annotator-page-list-item"));
@@ -6942,8 +7178,25 @@ class NativePdfAnnotatorSession {
 				const actions = button.createSpan({ cls: "menu-item-flair pdf-native-annotator-page-list-actions" });
 				actions.addEventListener("click", (event) => event.stopPropagation());
 				actions.addEventListener("keydown", (event) => event.stopPropagation());
+				if (reordering && !entry.isRemoved) {
+					for (const move of ["up", "down"] as const) {
+						const moveButton = this.createPageListActionButton(
+							move === "up" ? "chevron-up" : "chevron-down",
+							`Move ${entry.label} ${move}`,
+							() => {
+								const moved = this.movePage(entry.pageNumber, move);
+								if (moved !== null) {
+									this.reopenPageListPopover(anchor, moved);
+								}
+							}
+						);
+						moveButton.classList.add("pdf-native-annotator-page-list-move");
+						moveButton.disabled = !this.canMovePage(entry.pageNumber, move);
+						actions.append(moveButton);
+					}
+				}
 				const moreButton = this.createPageListActionButton("more-horizontal", `Actions for ${entry.label}`, (event) => {
-					this.openMixedPageEntryMenu(entry, event, actions);
+					this.openMixedPageEntryMenu(entry, event, actions, anchor);
 				});
 				actions.append(moreButton);
 				list.appendChild(button);
@@ -7000,10 +7253,25 @@ class NativePdfAnnotatorSession {
 		});
 		renderFilters();
 		renderList();
+		if (this.pageListReorderMode) {
+			filters.hidden = true;
+			searchWrap.hidden = true;
+		}
 		this.transientPopovers.open("page-list", popover, { onClose: () => pageListDocument.body.classList.remove("pdf-native-annotator-page-list-open") });
 		pageListDocument.body.classList.add("pdf-native-annotator-page-list-open");
 		this.positionPopoverNearAnchor(popover, anchor, "left");
-		this.ownerWindow.setTimeout(() => list.querySelector<HTMLElement>(".pdf-native-annotator-page-list-item.is-active")?.scrollIntoView({ block: "nearest" }), 0);
+		if (restore) {
+			list.scrollTop = restore.scrollTop;
+			const focusRow = restore.focusPageNumber === null
+				? null
+				: list.querySelector<HTMLElement>(`.pdf-native-annotator-page-list-item[data-page-number="${restore.focusPageNumber}"]`);
+			this.ownerWindow.setTimeout(() => {
+				focusRow?.scrollIntoView({ block: "nearest" });
+				focusRow?.focus({ preventScroll: true });
+			}, 0);
+		} else {
+			this.ownerWindow.setTimeout(() => list.querySelector<HTMLElement>(".pdf-native-annotator-page-list-item.is-active")?.scrollIntoView({ block: "nearest" }), 0);
+		}
 	}
 
 	private openPaperColorPopover(anchor: HTMLElement): void {
@@ -7278,7 +7546,7 @@ class NativePdfAnnotatorSession {
 		const currentPageNumber = this.currentPage;
 		const afterLocation = this.getNativeInsertPageLocation("after");
 		const beforeLocation = this.getNativeInsertPageLocation("before");
-		const quickDefaults = this.getNativeInsertPageDefaults("after", afterLocation);
+		const newPageFormat = this.resolveNewPageFormat();
 		menu.addItem((item) => item
 			.setTitle(`Go to page... (${this.getCurrentMixedPageOrdinal()} of ${Math.max(1, this.getMixedPageEntries().length)})`)
 			.setIcon("arrow-right-square")
@@ -7288,10 +7556,16 @@ class NativePdfAnnotatorSession {
 			.setIcon("files")
 			.onClick(() => this.openPageListPopover(button)));
 		menu.addSeparator();
+		// Uses the page and format captured when the menu opened, even if the view scrolls meanwhile.
 		menu.addItem((item) => item
-			.setTitle("Quick add after current")
+			.setTitle(`Add page after this one (${this.describePageFormat(newPageFormat)})`)
 			.setIcon("plus")
-			.onClick(() => this.insertTemplatePageAtLocation(afterLocation, quickDefaults)));
+			.onClick(() => this.insertTemplatePageAtLocation(afterLocation, {
+				title: "",
+				template: newPageFormat.template,
+				pageSize: newPageFormat.pageSize,
+				paperColor: newPageFormat.paperColor
+			})));
 		menu.addItem((item) => item
 			.setTitle("Add before...")
 			.setIcon("file-plus")
@@ -7300,6 +7574,10 @@ class NativePdfAnnotatorSession {
 			.setTitle("Add after...")
 			.setIcon("file-plus")
 			.onClick(() => this.openTemplatePageInsertModalAtLocation("after", afterLocation)));
+		menu.addItem((item) => item
+			.setTitle(this.plugin.getNewPageFormat().mode === "match" ? "New page format: match current page..." : "New page format: fixed...")
+			.setIcon("settings-2")
+			.onClick((event) => this.openNewPageFormatMenu(event, button)));
 		if (currentSyntheticPage) {
 			menu.addSeparator();
 			menu.addItem((item) => item
@@ -7806,6 +8084,7 @@ class NativePdfAnnotatorSession {
 
 			const rightGroup = createDiv();
 			rightGroup.className = "pdf-native-annotator-group is-actions";
+			rightGroup.appendChild(this.createQuickAddPageButton());
 			const addPageButton = this.createPageMenuButton();
 			rightGroup.appendChild(addPageButton);
 			const moreButton = this.createIconButton("more-vertical", "More annotation actions", false, () => {
@@ -7989,6 +8268,7 @@ class NativePdfAnnotatorSession {
 		}
 		rightGroup.appendChild(this.createHistoryIconButton("undo-2", "Undo", () => this.undoFromToolbar()));
 		rightGroup.appendChild(this.createHistoryIconButton("redo-2", "Redo", () => this.redoFromToolbar()));
+		rightGroup.appendChild(this.createQuickAddPageButton());
 		const addPageButton = this.createPageMenuButton();
 		rightGroup.appendChild(addPageButton);
 		const moreButton = this.createIconButton("more-vertical", "More annotation actions", false, () => {
@@ -8067,6 +8347,13 @@ class NativePdfAnnotatorSession {
 		setIcon(button, icon);
 		return button;
 	}
+	private createQuickAddPageButton(): HTMLButtonElement {
+		const format = this.resolveNewPageFormat();
+		const button = this.createIconButton("file-plus", `Add page after this one (${this.describePageFormat(format)})`, false, () => this.quickAddPageAfterCurrent());
+		button.classList.add("pdf-native-annotator-quick-add-page-button");
+		return button;
+	}
+
 	private createPageMenuButton(): HTMLButtonElement {
 		const button = createEl("button");
 		button.type = "button";
@@ -12586,6 +12873,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 				{ id: "export-annotated-mixed-pdf", name: "Export annotated mixed PDF", run: (session) => session.exportAnnotatedMixedDocumentPdf() },
 				{ id: "create-native-mixed-working-pdf", name: "Advanced: create native mixed working PDF", run: (session) => session.materializeNativeMixedWorkingPdf() },
 				{ id: "insert-native-notebook-page-after-current", name: "Add temporary template page after current PDF page", run: (session) => session.openTemplatePageInsertModal("after") },
+				{ id: "quick-add-page-after-current", name: "Add page after current page (new page format)", run: (session) => session.quickAddPageAfterCurrent() },
 				{ id: "insert-native-notebook-page-before-current", name: "Add temporary template page before current PDF page", run: (session) => session.openTemplatePageInsertModal("before") }
 			]
 		);
@@ -12829,6 +13117,10 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		return this.settingsController.shouldShowDrawingNotices();
 	}
 
+	getNewPageFormat(): NewPageFormatSettings {
+		return this.settingsController.getNewPageFormat();
+	}
+
 	shouldShowRenderTelemetry(): boolean {
 		return this.settingsController.shouldShowRenderTelemetry();
 	}
@@ -12957,7 +13249,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		this.settingsController.updateTextColor(color);
 	}
 
-	async updateBehaviorSettings(nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs">>): Promise<void> {
+	async updateBehaviorSettings(nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs" | "newPageFormat">>): Promise<void> {
 		await this.settingsController.updateBehaviorSettings(nextSettings);
 	}
 

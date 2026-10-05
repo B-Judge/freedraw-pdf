@@ -761,6 +761,73 @@
 	font: var(--font-ui-smaller);
 }
 
+.pdf-native-annotator-page-list-page-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-4-3);
+}
+
+.pdf-native-annotator-page-list-page-action {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex: 1 1 auto;
+	justify-content: center;
+	min-height: 32px;
+	padding: 5px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	font: var(--font-ui-small);
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.pdf-native-annotator-page-list-page-action:hover,
+.pdf-native-annotator-page-list-page-action:focus-visible {
+	background: var(--background-modifier-hover);
+	border-color: var(--background-modifier-border-hover);
+}
+
+.pdf-native-annotator-page-list-page-action.is-active {
+	background: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.pdf-native-annotator-page-list-page-action-icon {
+	display: inline-flex;
+}
+
+.pdf-native-annotator-page-list-page-action-icon svg {
+	width: 15px;
+	height: 15px;
+}
+
+.pdf-native-annotator-page-list-reorder-hint {
+	margin: 0 0 var(--size-4-3);
+	color: var(--text-muted);
+	font: var(--font-ui-smaller);
+}
+
+.pdf-native-annotator-page-list-popover.is-reordering .pdf-native-annotator-page-list-actions {
+	opacity: 1;
+}
+
+/* Reordering works on the full page order, so filtering and search are hidden. */
+.pdf-native-annotator-page-list-popover.is-reordering .pdf-native-annotator-page-list-filters,
+.pdf-native-annotator-page-list-popover.is-reordering .pdf-native-annotator-page-list-search {
+	display: none;
+}
+
+.pdf-native-annotator-page-list-action.pdf-native-annotator-page-list-move:disabled {
+	opacity: 0.3;
+	cursor: default;
+	background: transparent;
+}
+
 .pdf-native-annotator-page-list-filters {
 	display: flex;
 	flex-wrap: nowrap;
@@ -1942,6 +2009,10 @@
 	.pdf-native-annotator-page-list-action {
 		width: 44px;
 		height: 44px;
+	}
+
+	.pdf-native-annotator-page-list-page-action {
+		min-height: 44px;
 	}
 
 	.pdf-native-annotator-tool-color-popover .pdf-native-annotator-swatch-inner {

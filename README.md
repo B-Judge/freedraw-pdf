@@ -11,7 +11,7 @@ The PDF is open on the left. On the right, an Obsidian note displays an annotate
 - Write with a pressure-aware pen or highlighter, with separate colour and width settings.
 - Add text boxes, lines, rectangles, ellipses, and images.
 - Move, resize, duplicate, and reorder annotations. Erase whole objects or parts of a stroke.
-- Insert blank, ruled, grid, or dotted pages between PDF pages, with a choice of paper colours and sizes.
+- Insert blank, ruled, grid, or dotted pages anywhere in a PDF, with a choice of paper colours and sizes, and rearrange them.
 - Show an annotated page or selected region inside a Markdown note.
 - Export the document, added pages, and annotations as a separate PDF.
 
@@ -32,7 +32,11 @@ Open a PDF and choose **Annotate** from its toolbar or the command palette. Sele
 
 The toolbar sits inside Obsidian's PDF toolbar when available. You can choose a floating toolbar in the plugin settings.
 
-To add writing space, open the page menu and insert a template page. The **Pages** menu lets you navigate, rename, duplicate, and manage pages. For sharing, use the export command in the overflow menu.
+To add writing space, tap the add-page button next to **Page** in the toolbar. It adds a page after the one you are on, in the same paper, size, and colour as that page. On an ordinary PDF page, which has no paper of its own, it uses the format chosen under **Pages** in the plugin settings, where you can also make every new page use one fixed format. The **Page** menu also offers **Add before...** and **Add after...** for choosing a format each time.
+
+**Manage pages** lists every page. Use **Add at start** and **Add at end** to add pages at either end, or a page's **⋯** menu to add a page right before or after it. Choose **Reorder** to move pages with the arrows, or use **Move to start**, **Move up**, **Move down**, and **Move to end** in a page's menu. Annotations always move with their page, and moves can be undone. Pages you added can go anywhere. The original pages of a PDF stay in their order, because Obsidian's PDF viewer shows them as they are in the file; in a notebook created with **Create blank annotatable PDF**, every page can be moved.
+
+For sharing, use the export command in the overflow menu.
 
 If you want to scroll with your finger and write with a pen, set **Finger input** to **Pan with finger**. Pen, highlighter, eraser, and text preferences are also available in the plugin settings.
 

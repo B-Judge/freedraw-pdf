@@ -16,6 +16,7 @@ const checks = [
 	"check-eraser-migration.js",
 	"check-render-concurrency.js",
 	"check-template-consistency.js",
+	"check-page-management.js",
 	"check-session-commands.js",
 	"check-transient-popovers.js",
 	"check-menu-descriptors.js",

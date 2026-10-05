@@ -31,13 +31,16 @@ class Menu {
  addSeparator(){return this}
 }
 const menuSession=sessionClass(['openAddPageMenu'],{Menu,PAPER_COLOR_PRESETS:[{color:'#ffffff',label:'White'}],getNotebookTemplateLabel:v=>v});
+menuSession.plugin={getNewPageFormat:()=>({mode:'match',template:'ruled',pageSize:'a4',paperColor:'#ffffff'})};
+menuSession.resolveNewPageFormat=()=>({template:'blank',pageSize:'a4',paperColor:'#ffffff',matchedCurrentPage:true});
+menuSession.describePageFormat=()=>'Blank, A4, white';
 let openedMenu,insertLocation,templateTarget;
 Object.assign(menuSession,{currentPage:1,syncCurrentPageForPageAction(){},getCurrentSyntheticPage:()=>null,getCurrentMixedPageOrdinal:()=>1,getMixedPageEntries:()=>[{},{}],getNativeInsertPageLocation:()=>({anchor:1,insertIndex:0}),getNativeInsertPageDefaults:()=>({template:'blank'}),canEditPdfPageTemplate:()=>true,getPdfPageTemplate:()=>({template:'blank',paperColor:'#ffffff'}),showExclusiveMenuAtPosition:menu=>openedMenu=menu,insertTemplatePageAtLocation:location=>insertLocation=location,openPdfPageTemplateMenu:page=>templateTarget=page});
 menuSession.openAddPageMenu({getBoundingClientRect:()=>({left:0,bottom:0})});
 assert.ok(openedMenu.items.some(item=>item.title==='Template: blank'),'Created PDF must expose template directly in Page menu');
 assert.ok(openedMenu.items.some(item=>item.title==='Paper: White'),'Created PDF must expose colour directly in Page menu');
 menuSession.currentPage=2;
-openedMenu.items.find(item=>item.title==='Quick add after current').run();
+openedMenu.items.find(item=>item.title==='Add page after this one (Blank, A4, white)').run();
 assert.equal(insertLocation.anchor,1,'Menu action must retain the page where it was opened');
 openedMenu.items.find(item=>item.title==='Template: blank').run({});
 assert.equal(templateTarget,1);

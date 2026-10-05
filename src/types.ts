@@ -57,6 +57,14 @@ export interface PreviewStateSnapshot {
 	radius: number;
 }
 
+/** What "Add page" creates. "match" copies the current page's format when it has one. */
+export interface NewPageFormatSettings {
+	mode: "match" | "fixed";
+	template: NotebookTemplate;
+	pageSize: NotebookPageSize;
+	paperColor: string;
+}
+
 export interface PDFAnnotatorSettings {
 	pressureCaptureVersion: number;
 	toolDefaults: ToolStateSnapshot;
@@ -74,6 +82,7 @@ export interface PDFAnnotatorSettings {
 	inkRenderSettings: InkRenderSettings;
 	legacyInkRenderSettings?: InkRenderSettings;
 	autosaveDelayMs: number;
+	newPageFormat: NewPageFormatSettings;
 }
 
 export interface AnnotationPoint {

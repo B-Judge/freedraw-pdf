@@ -13,6 +13,7 @@
     "check:eraser": "node scripts/check-eraser-migration.js",
     "check:render": "node scripts/check-render-concurrency.js",
     "check:templates": "node scripts/check-template-consistency.js",
+    "check:pages": "node scripts/check-page-management.js",
     "check:commands": "node scripts/check-session-commands.js",
     "check:popovers": "node scripts/check-transient-popovers.js",
     "check:menus": "node scripts/check-menu-descriptors.js",

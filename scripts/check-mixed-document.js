@@ -51,7 +51,7 @@ assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "\"annotated 
 assertContains("main.ts", mainTs, "id: \"insert-native-notebook-page-after-current\"", "temporary insertion-after command must remain registered");
 assertContains("main.ts", mainTs, "id: \"insert-native-notebook-page-before-current\"", "temporary insertion-before command must remain registered");
 assertContains("main.ts", mainTs, "openTemplatePageInsertModal", "default insertion must use the configurable temporary-page modal path");
-assertContains("main.ts", mainTs, "Quick add after current", "temporary insertion must be visible in menus");
+assertContains("main.ts", mainTs, "Add page after this one (", "temporary insertion must be visible in menus");
 assertContains("main.ts", mainTs, "Annotated mixed PDF", "finished-PDF export must be visible in the page workflow");
 assertContains("main.ts", mainTs, "deleteCurrentPdfPageFromSession", "current original PDF pages must be deletable non-destructively from the session");
 assertContains("main.ts", mainTs, "deletedPdfPages", "deleted original PDF pages must be tracked in the sidecar");
@@ -133,7 +133,7 @@ assertContains("package.json", JSON.stringify(packageJson.scripts), "check:mixed
 if (builtMain) {
 	assertContains("main.js", builtMain, "Create blank annotatable PDF", "built bundle must include scratch native PDF workflow");
 	assertContains("main.js", builtMain, "Export annotated mixed PDF", "built bundle must include mixed annotated PDF export");
-	assertContains("main.js", builtMain, "Quick add after current", "built bundle must include temporary page insertion");
+	assertContains("main.js", builtMain, "Add page after this one (", "built bundle must include temporary page insertion");
 	assertContains("main.js", builtMain, "Remove PDF page from session", "built bundle must include recoverable session-level PDF page removal");
 	assertContains("main.js", builtMain, "Delete permanently", "built bundle must include removed-page cleanup");
 	assertNotContains("main.js", builtMain, "Legacy: Create .annotbook notebook", "built bundle must not include standalone notebook commands");

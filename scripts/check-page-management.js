@@ -30,8 +30,8 @@ function loadModule(relativePath) {
 	return moduleShim.exports;
 }
 
-function sessionClass(names, globals = {}) {
-	const node = tree.statements.find((statement) => ts.isClassDeclaration(statement) && statement.name?.text === "NativePdfAnnotatorSession");
+function sessionClass(names, globals = {}, className = "NativePdfAnnotatorSession") {
+	const node = tree.statements.find((statement) => ts.isClassDeclaration(statement) && statement.name?.text === className);
 	const methods = names.map((name) => {
 		const member = node.members.find((candidate) => candidate.name?.getText(tree) === name);
 		assert.ok(member, `missing session method ${name}`);
@@ -193,7 +193,118 @@ const pageOf = (session, id) => session.annotationDocument.strokes.find((stroke)
 	assert.match(matching.describePageFormat({ template: "grid", pageSize: "a4", paperColor: "#fffdf7" }), /^Grid, A4 portrait, cream$/i);
 }
 
-// 5. UI wiring: the controls exist and use the shared paths.
+// 5. Links and embeds in notes follow their page whenever page numbers change.
+const linkChecks = (async () => {
+	const pageIdentity = loadModule("src/notebook/pageIdentity");
+	const rewriter = loadModule("src/markdown/pageReferenceRewriter");
+	class TFile {
+		constructor(path) { this.path = path; this.name = path.split("/").pop(); this.basename = this.name.replace(/\.[^.]+$/, ""); this.extension = this.name.split(".").pop(); }
+	}
+	const pdf = new TFile("Courses/Lecture 3.pdf");
+	const notes = new Map([
+		["Courses/Week 3.md", [
+			"Slides: [[Lecture 3.pdf#page=2]]",
+			"My worked example: [[Courses/Lecture 3.pdf#page=4|example]]",
+			"Summary sheet: ![[Lecture 3#page=5]]",
+			"Region: [[Courses/Lecture 3.pdf#page=5]] ::region[page=5;rect=0.1,0.1,0.5,0.5]",
+			"Markdown link: [summary](Lecture%203.pdf#page=5)",
+			"```freedraw-pdf",
+			"path: Courses/Lecture 3.pdf",
+			"page: 4",
+			"width: 720",
+			"```",
+			"Other PDF: [[Lecture 4.pdf#page=4]]"
+		].join("\n")],
+		["Courses/Unrelated.md", "Nothing about that PDF, page 4."]
+	]);
+	const files = new Map([[pdf.path, pdf], ["Courses/Lecture 4.pdf", new TFile("Courses/Lecture 4.pdf")], ...[...notes.keys()].map((path) => [path, new TFile(path)])]);
+	const linkTargets = { "Lecture 3.pdf": pdf.path, "Lecture 3": pdf.path, "Lecture 4.pdf": "Courses/Lecture 4.pdf" };
+	const writes = [];
+	const plugin = sessionClass(["updatePageReferences"], { TFile, Notice, rewritePageReferences: rewriter.rewritePageReferences }, "PDFAnnotatorPlugin");
+	plugin.pageReferenceUpdates = Promise.resolve();
+	plugin.app = {
+		vault: {
+			getMarkdownFiles: () => [...notes.keys()].map((path) => files.get(path)),
+			getAbstractFileByPath: (path) => files.get(path) ?? null,
+			cachedRead: async (file) => notes.get(file.path),
+			process: async (file, update) => { const next = update(notes.get(file.path)); writes.push(file.path); notes.set(file.path, next); return next; }
+		},
+		metadataCache: { getFirstLinkpathDest: (linkPath) => { const target = linkTargets[linkPath]; return target ? files.get(target) : null; } }
+	};
+
+	// Ordinary PDF with 3 pages; added page A after page 1 (page 4) and B after page 3 (page 5).
+	const document = emptyDocument({
+		strokes: [ink(1, "p1"), ink(2, "p2"), ink(3, "p3"), ink(4, "A"), ink(5, "B")],
+		appendedPages: [added("A", 1), added("B", 3)]
+	});
+	const session = createSession(document, 3);
+	const reconciler = sessionClass(["reconcilePageNumbers"], { getPageIdentities: pageIdentity.getPageIdentities, diffPageIdentities: pageIdentity.diffPageIdentities });
+	session.reconcilePageNumbers = reconciler.reconcilePageNumbers;
+	session.file = pdf;
+	session.plugin.updatePageReferences = (file, changes) => plugin.updatePageReferences(file, changes);
+	// In the plugin every change goes through scheduleSave, which reconciles page numbers.
+	session.markDirtyAndRedraw = function () { this.reconcilePageNumbers(); };
+	session.reconcilePageNumbers();
+	const week = () => notes.get("Courses/Week 3.md");
+	const linkFor = (id) => `page=${pageOf(session, id)}`;
+	const settle = () => plugin.pageReferenceUpdates;
+
+	// Move B (page 5) to the start: B becomes page 4 and A becomes page 5.
+	session.movePage(5, "top");
+	await settle();
+	assert.equal(pageOf(session, "B"), 4);
+	assert.ok(week().includes("My worked example: [[Courses/Lecture 3.pdf#page=5|example]]"), "a link to A follows it to page 5");
+	assert.ok(week().includes("Summary sheet: ![[Lecture 3#page=4]]"), "an embed of B follows it to page 4");
+	assert.ok(week().includes("Region: [[Courses/Lecture 3.pdf#page=4]] ::region[page=4;"), "a region link follows its page");
+	assert.ok(week().includes("[summary](Lecture%203.pdf#page=4)"), "a markdown link follows its page");
+	assert.ok(week().includes("path: Courses/Lecture 3.pdf\npage: 5"), "an annotated embed block follows its page");
+	assert.ok(week().includes("Slides: [[Lecture 3.pdf#page=2]]"), "links to original PDF pages are unchanged");
+	assert.ok(week().includes("Other PDF: [[Lecture 4.pdf#page=4]]"), "links to other PDFs are unchanged");
+	assert.ok(!writes.includes("Courses/Unrelated.md"), "notes without links to the PDF are not rewritten");
+
+	// Insert a page at the start: every added page shifts by one.
+	session.quickAddPageAt("start");
+	await settle();
+	assert.ok(week().includes(`My worked example: [[Courses/Lecture 3.pdf#${linkFor("A")}|example]]`), "links follow pages shifted by an insertion");
+	assert.ok(week().includes(`Summary sheet: ![[Lecture 3#${linkFor("B")}]]`));
+
+	// Undo both changes by restoring the original layout: links return to their original pages.
+	const original = emptyDocument({
+		strokes: [ink(1, "p1"), ink(2, "p2"), ink(3, "p3"), ink(4, "A"), ink(5, "B")],
+		appendedPages: [added("A", 1), added("B", 3)]
+	});
+	session.annotationDocument = original;
+	session.reconcilePageNumbers();
+	await settle();
+	assert.ok(week().includes("My worked example: [[Courses/Lecture 3.pdf#page=4|example]]"), "undo returns links to their original pages");
+	assert.ok(week().includes("Summary sheet: ![[Lecture 3#page=5]]"));
+	assert.ok(week().includes("path: Courses/Lecture 3.pdf\npage: 4"));
+
+	// Notebook reordering: notebook pages keep their identity through their paper template.
+	const notebook = emptyDocument({
+		nativePageTemplatesEditable: true,
+		pdfPageTemplates: [1, 2, 3].map((page, index) => ({ page, template: ["ruled", "grid", "dot"][index], paperColor: "#ffffff", pageSize: "a4" })),
+		strokes: [ink(1, "n1"), ink(2, "n2"), ink(3, "n3")]
+	});
+	pageIdentity.ensurePdfPageTemplateIds(notebook);
+	notes.set("Courses/Week 3.md", "Notebook page three: [[Lecture 3.pdf#page=3]] and one: [[Lecture 3.pdf#page=1]]");
+	const notebookSession = createSession(notebook, 3);
+	notebookSession.reconcilePageNumbers = reconciler.reconcilePageNumbers;
+	notebookSession.file = pdf;
+	notebookSession.plugin.updatePageReferences = (file, changes) => plugin.updatePageReferences(file, changes);
+	notebookSession.markDirtyAndRedraw = function () { this.reconcilePageNumbers(); };
+	notebookSession.reconcilePageNumbers();
+	notebookSession.movePage(3, "top");
+	await settle();
+	assert.equal(week(), "Notebook page three: [[Lecture 3.pdf#page=1]] and one: [[Lecture 3.pdf#page=2]]", "notebook page links follow reordered pages");
+
+	// Loading a sidecar keeps template ids.
+	const storeSource = fs.readFileSync(path.join(root, "src/stores/annotationStore.ts"), "utf8");
+	assert.ok(storeSource.includes("...(typeof pageTemplate.id === \"string\" && pageTemplate.id ? { id: pageTemplate.id } : {}),"), "page template ids must survive loading");
+	assert.ok(mainSource.includes("	private scheduleSave(): void {\n		this.reconcilePageNumbers();"), "every document change must reconcile page numbers");
+})();
+
+// 6. UI wiring: the controls exist and use the shared paths.
 const stylesCss = fs.readFileSync(path.join(root, "styles.css"), "utf8");
 for (const [needle, message] of [
 	["rightGroup.appendChild(this.createQuickAddPageButton());", "a visible add-page button must be on the toolbar"],
@@ -208,4 +319,9 @@ for (const [needle, message] of [
 }
 assert.ok(stylesCss.includes(".pdf-native-annotator-page-list-page-action {"), "page manager actions must be styled");
 
-console.log("Page management verifier passed: moves, notebook reordering, add at start/end/before/after, new page format.");
+linkChecks.then(() => {
+	console.log("Page management verifier passed: moves, notebook reordering, add at start/end/before/after, new page format, links and embeds follow renumbered pages.");
+}).catch((error) => {
+	console.error(error);
+	process.exit(1);
+});

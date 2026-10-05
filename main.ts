@@ -29,6 +29,8 @@ import { dataUrlToArrayBuffer, clamp, generateId, getBaseName } from "./src/util
 import { readClipboardText, writeClipboardText } from "./src/utils/clipboard";
 import { isEmbeddedImageDataUrl } from "./src/utils/imageData";
 import { isTabletWebKitTouchDevice } from "./src/utils/deviceUtils";
+import { diffPageIdentities, ensurePdfPageTemplateIds, getPageIdentities, type PageNumberChanges } from "./src/notebook/pageIdentity";
+import { rewritePageReferences } from "./src/markdown/pageReferenceRewriter";
 import { applyPageOrder, canReorderPdfPages, isPageOrderAllowed, movePageInOrder, type PageMove } from "./src/notebook/pageOrder";
 import { NOTEBOOK_PAGE_SIZES, NOTEBOOK_TEMPLATES, createTemplateNotebookPage, getNotebookPageRenderDimensions, getNotebookPageSizeDimensions, getNotebookPageSizeLabel, getNotebookTemplateLabel, hasEditableNativePageTemplates } from "./src/notebook/pageModel";
 import {
@@ -464,6 +466,8 @@ class NativePdfAnnotatorSession {
 	private pageListFilter: "all" | "added" | "removed" = "all";
 	private pageListQuery = "";
 	private pageListReorderMode = false;
+	/** Page identities as of the last reconciliation, for keeping note links on the right page. */
+	private pageIdentityBaseline: { file: TFile; realPdfPageCount: number; identities: string[] } | null = null;
 	private nativeMixedPageInputEl: HTMLInputElement | null = null;
 	private nativeMixedPageCountEl: HTMLElement | null = null;
 	private inlineTextEditorEl: HTMLTextAreaElement | null = null;
@@ -697,6 +701,8 @@ class NativePdfAnnotatorSession {
 				if (generation !== this.attachmentGeneration || this.getPdfFile()?.path !== nextFile.path) { return; }
 				this.file = nextFile;
 				this.annotationDocument = loadInfo.document;
+				ensurePdfPageTemplateIds(this.annotationDocument);
+				this.pageIdentityBaseline = null;
 				this.nextPageZIndexCache.clear();
 				this.annotationLoadInfo = loadInfo;
 				this.isDirty = false;
@@ -2886,6 +2892,10 @@ class NativePdfAnnotatorSession {
 		}
 
 		this.realPdfPageCount = rawRealPageEls.reduce((maxPage, entry) => Math.max(maxPage, entry.pageNumber), 0);
+		if (!this.pageIdentityBaseline || this.pageIdentityBaseline.file !== this.file || this.pageIdentityBaseline.realPdfPageCount !== this.realPdfPageCount) {
+			// Starting point for detecting renumbering; no links are changed here.
+			this.reconcilePageNumbers();
+		}
 		this.applyDeletedPdfPageVisibility(rawRealPageEls);
 		this.syncSyntheticPages(rawRealPageEls);
 		const syntheticPageEls = Array.from(viewContentEl.querySelectorAll<HTMLElement>(".pdf-native-annotator-synthetic-page[data-page-number]"))
@@ -12645,7 +12655,29 @@ class NativePdfAnnotatorSession {
 		this.refreshStatus(message);
 	}
 
+	/**
+	 * Called whenever the document changes. If pages were renumbered since the
+	 * last call (added, removed, restored, duplicated, moved, or an undo/redo of
+	 * those), links and embeds in notes are rewritten to follow their pages.
+	 */
+	private reconcilePageNumbers(): void {
+		if (!this.file || !this.annotationDocument || this.realPdfPageCount <= 0) {
+			return;
+		}
+		const identities = getPageIdentities(this.annotationDocument, this.realPdfPageCount);
+		const baseline = this.pageIdentityBaseline;
+		this.pageIdentityBaseline = { file: this.file, realPdfPageCount: this.realPdfPageCount, identities };
+		if (!baseline || baseline.file !== this.file || baseline.realPdfPageCount !== this.realPdfPageCount) {
+			return;
+		}
+		const changes = diffPageIdentities(baseline.identities, identities);
+		if (changes.pageMap.size > 0) {
+			void this.plugin.updatePageReferences(this.file, changes);
+		}
+	}
+
 	private scheduleSave(): void {
+		this.reconcilePageNumbers();
 		if (this.autosaveHandle !== null) {
 			this.ownerWindow.clearTimeout(this.autosaveHandle);
 		}
@@ -12808,6 +12840,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 	private settingsController!: PDFAnnotatorSettingsController;
 	private sessions = new Map<WorkspaceLeaf, NativePdfAnnotatorSession>();
 	private clipboard: AnnotationClipboardPayload | null = null;
+	private pageReferenceUpdates: Promise<void> = Promise.resolve();
 
 	async onload(): Promise<void> {
 		this.settingsController = new PDFAnnotatorSettingsController(
@@ -13119,6 +13152,63 @@ export default class PDFAnnotatorPlugin extends Plugin {
 
 	getNewPageFormat(): NewPageFormatSettings {
 		return this.settingsController.getNewPageFormat();
+	}
+
+	/**
+	 * After a PDF's pages were renumbered, rewrites page links, region links,
+	 * and annotated embeds that point to it in every note, so they keep showing
+	 * the same page. Updates run one at a time, in the order the changes
+	 * happened, and each note is rewritten atomically.
+	 */
+	updatePageReferences(pdfFile: TFile, changes: PageNumberChanges): Promise<void> {
+		if (changes.pageMap.size === 0) {
+			return this.pageReferenceUpdates;
+		}
+		const run = async (): Promise<void> => {
+			const resolveFrom = (sourcePath: string) => (linkPath: string): string | null => {
+				const direct = this.app.vault.getAbstractFileByPath(linkPath);
+				if (direct instanceof TFile) {
+					return direct.path;
+				}
+				return this.app.metadataCache.getFirstLinkpathDest(linkPath, sourcePath)?.path ?? null;
+			};
+			let updatedReferences = 0;
+			let orphanedReferences = 0;
+			const updatedNotes: string[] = [];
+			for (const note of this.app.vault.getMarkdownFiles()) {
+				const cached = await this.app.vault.cachedRead(note);
+				if (!cached.includes(pdfFile.basename) || (!cached.includes("#page=") && !cached.includes("freedraw-pdf"))) {
+					continue;
+				}
+				const options = { targetPath: pdfFile.path, pageMap: changes.pageMap, removedPages: changes.removedPages, resolve: resolveFrom(note.path) };
+				if (rewritePageReferences(cached, options).updated === 0) {
+					continue;
+				}
+				let noteUpdates = 0;
+				await this.app.vault.process(note, (current) => {
+					const result = rewritePageReferences(current, options);
+					noteUpdates = result.updated;
+					orphanedReferences += result.orphaned;
+					return result.text;
+				});
+				if (noteUpdates > 0) {
+					updatedReferences += noteUpdates;
+					updatedNotes.push(note.basename);
+				}
+			}
+			if (updatedReferences > 0) {
+				const noteList = updatedNotes.length <= 3 ? updatedNotes.join(", ") : `${updatedNotes.length} notes`;
+				new Notice(`Updated ${updatedReferences} link${updatedReferences === 1 ? "" : "s"} to ${pdfFile.basename} in ${noteList} to follow the moved pages.`, 5000);
+			}
+			if (orphanedReferences > 0) {
+				new Notice(`${orphanedReferences} link${orphanedReferences === 1 ? "" : "s"} to ${pdfFile.basename} still point to a page that was removed.`, 8000);
+			}
+		};
+		this.pageReferenceUpdates = this.pageReferenceUpdates.then(run).catch((error: unknown) => {
+			console.error("freedraw-pdf: could not update page links", error);
+			new Notice(`Could not update links to ${pdfFile.basename}: ${error instanceof Error ? error.message : String(error)}`, 8000);
+		});
+		return this.pageReferenceUpdates;
 	}
 
 	shouldShowRenderTelemetry(): boolean {

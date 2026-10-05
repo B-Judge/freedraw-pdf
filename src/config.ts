@@ -119,7 +119,8 @@ export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
 		pressureMode: "auto"
 	},
 	autosaveDelayMs: 600,
-	keepAnnotatedCopy: true
+	keepAnnotatedCopy: true,
+	newPageFormat: { mode: "match", template: "ruled", pageSize: "a4", paperColor: "#fffdf7" }
 };
 
 export function normalizeToolPresets(presets: ToolPreset[] | undefined): ToolPreset[] {

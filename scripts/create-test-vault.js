@@ -150,7 +150,7 @@ While annotating, **1 = Pen, 2 = Highlighter, 3 = Eraser, 4 = Select, 5 = Text**
 
 Change **Settings → Freedraw PDF → Stabilization**: 0 disables path stabilization; higher values smooth more strongly. Changes affect only new strokes; existing ink keeps its appearance.
 
-Create a new PDF to start with a white blank page. In **Page**, use **Template** and **Paper** to change its overlay style and colour. **Quick add after current** inserts the temporary page directly after the page where the menu was opened.
+Create a new PDF to start with a white blank page. In **Page**, use **Template** and **Paper** to change its overlay style and colour. **Add page after this one** inserts a page directly after the page where the menu was opened, in the new page format (by default, matching that page).
 
 ## Focused checks
 

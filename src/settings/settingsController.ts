@@ -1,7 +1,8 @@
 import { DEFAULT_SETTINGS, clampToolWidth, normalizeToolPresets } from "../config";
-import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
+import { NOTEBOOK_PAGE_SIZES, NOTEBOOK_TEMPLATES } from "../notebook/pageModel";
+import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, NewPageFormatSettings, NotebookPageSize, NotebookTemplate, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
 
-type BehaviorSettingKeys = "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs" | "keepAnnotatedCopy";
+type BehaviorSettingKeys = "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs" | "keepAnnotatedCopy" | "newPageFormat";
 
 function normalizeInkInputPolicy(value: unknown): InkInputPolicy {
 	if (value === "pen-mouse-stylus-touch") {
@@ -19,6 +20,17 @@ function normalizeLivePreviewMode(value: unknown): LivePreviewMode {
 
 function normalizeColor(value: unknown, fallback: string): string {
 	return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+}
+
+export function normalizeNewPageFormat(value: unknown): NewPageFormatSettings {
+	const fallback = DEFAULT_SETTINGS.newPageFormat;
+	const raw = (value && typeof value === "object" ? value : {}) as Partial<Record<keyof NewPageFormatSettings, unknown>>;
+	return {
+		mode: raw.mode === "fixed" || raw.mode === "match" ? raw.mode : fallback.mode,
+		template: NOTEBOOK_TEMPLATES.includes(raw.template as NotebookTemplate) ? raw.template as NotebookTemplate : fallback.template,
+		pageSize: NOTEBOOK_PAGE_SIZES.includes(raw.pageSize as NotebookPageSize) ? raw.pageSize as NotebookPageSize : fallback.pageSize,
+		paperColor: normalizeColor(raw.paperColor, fallback.paperColor)
+	};
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -103,7 +115,8 @@ export class PDFAnnotatorSettingsController {
 			inkRenderSettings,
 			legacyInkRenderSettings: normalizeInkRenderSettings(loaded?.legacyInkRenderSettings ?? inkRenderSettings),
 			autosaveDelayMs: typeof loaded?.autosaveDelayMs === "number" ? loaded.autosaveDelayMs : DEFAULT_SETTINGS.autosaveDelayMs,
-			keepAnnotatedCopy: typeof loaded?.keepAnnotatedCopy === "boolean" ? loaded.keepAnnotatedCopy : DEFAULT_SETTINGS.keepAnnotatedCopy
+			keepAnnotatedCopy: typeof loaded?.keepAnnotatedCopy === "boolean" ? loaded.keepAnnotatedCopy : DEFAULT_SETTINGS.keepAnnotatedCopy,
+			newPageFormat: normalizeNewPageFormat(loaded?.newPageFormat)
 		};
 		if (!loaded?.legacyInkRenderSettings || shouldMigrateLegacyPressure || shouldMigrateLegacyPreview || JSON.stringify(loaded?.presets ?? []) !== JSON.stringify(normalizedPresets)) {
 			this.scheduleSave();
@@ -162,6 +175,10 @@ export class PDFAnnotatorSettingsController {
 		return this.settings.keepAnnotatedCopy;
 	}
 
+	getNewPageFormat(): NewPageFormatSettings {
+		return { ...this.settings.newPageFormat };
+	}
+
 	shouldShowDrawingNotices(): boolean {
 		return this.settings.showDrawingNotices;
 	}
@@ -208,7 +225,8 @@ export class PDFAnnotatorSettingsController {
 	async updateBehaviorSettings(nextSettings: Partial<Pick<PDFAnnotatorSettings, BehaviorSettingKeys>>): Promise<void> {
 		this.settings = {
 			...this.settings,
-			...nextSettings
+			...nextSettings,
+			newPageFormat: nextSettings.newPageFormat ? normalizeNewPageFormat(nextSettings.newPageFormat) : this.settings.newPageFormat
 		};
 		this.scheduleSave();
 		this.onBehaviorChanged();
@@ -235,7 +253,8 @@ export class PDFAnnotatorSettingsController {
 			livePreviewMode: DEFAULT_SETTINGS.livePreviewMode,
 			inkRenderSettings: { ...DEFAULT_SETTINGS.inkRenderSettings },
 			autosaveDelayMs: DEFAULT_SETTINGS.autosaveDelayMs,
-			keepAnnotatedCopy: DEFAULT_SETTINGS.keepAnnotatedCopy
+			keepAnnotatedCopy: DEFAULT_SETTINGS.keepAnnotatedCopy,
+			newPageFormat: { ...DEFAULT_SETTINGS.newPageFormat }
 		};
 	}
 

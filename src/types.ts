@@ -57,6 +57,14 @@ export interface PreviewStateSnapshot {
 	radius: number;
 }
 
+/** What "Add page" creates. "match" copies the current page's format when it has one. */
+export interface NewPageFormatSettings {
+	mode: "match" | "fixed";
+	template: NotebookTemplate;
+	pageSize: NotebookPageSize;
+	paperColor: string;
+}
+
 export interface PDFAnnotatorSettings {
 	pressureCaptureVersion: number;
 	toolDefaults: ToolStateSnapshot;
@@ -76,6 +84,7 @@ export interface PDFAnnotatorSettings {
 	autosaveDelayMs: number;
 	/** Keep "<name> (annotated).pdf" up to date when an annotated PDF is closed. */
 	keepAnnotatedCopy: boolean;
+	newPageFormat: NewPageFormatSettings;
 }
 
 export interface AnnotationPoint {

@@ -1,6 +1,7 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
-import { TOOL_WIDTH_RANGES } from "../config";
-import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
+import { PAPER_COLOR_PRESETS, TOOL_WIDTH_RANGES } from "../config";
+import { NOTEBOOK_PAGE_SIZES, NOTEBOOK_TEMPLATES, getNotebookPageSizeLabel, getNotebookTemplateLabel } from "../notebook/pageModel";
+import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, NewPageFormatSettings, NotebookPageSize, NotebookTemplate, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
 
 type SettingDefinitionCompat = {
 	name: string;
@@ -16,6 +17,7 @@ export interface PDFAnnotatorSettingsHost {
 	shouldShowAnnotatedEmbedHeader(): boolean;
 	shouldShowDrawingNotices(): boolean;
 	shouldKeepAnnotatedCopy(): boolean;
+	getNewPageFormat(): NewPageFormatSettings;
 	shouldShowRenderTelemetry(): boolean;
 	getInkInputPolicy(): InkInputPolicy;
 	getLivePreviewMode(): LivePreviewMode;
@@ -24,7 +26,7 @@ export interface PDFAnnotatorSettingsHost {
 	getToolDefaults(): ToolStateSnapshot;
 	getStoredPresets(): ToolPreset[];
 	updateBehaviorSettings(
-		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs" | "keepAnnotatedCopy">>
+		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs" | "keepAnnotatedCopy" | "newPageFormat">>
 	): Promise<void>;
 	updateToolPreferences(snapshot: ToolStateSnapshot, presets: ToolPreset[]): void;
 }
@@ -35,6 +37,11 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 	}
 
 	getSettingDefinitions(): SettingDefinitionCompat[] {
+		const updateNewPageFormat = async (patch: Partial<NewPageFormatSettings>): Promise<void> => {
+			await this.plugin.updateBehaviorSettings({
+				newPageFormat: { ...this.plugin.getNewPageFormat(), ...patch }
+			});
+		};
 		return [
 			{
 				name: "Toolbar placement",
@@ -130,6 +137,85 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 								.setValue(this.plugin.shouldKeepAnnotatedCopy())
 								.onChange(async (value) => {
 									await this.plugin.updateBehaviorSettings({ keepAnnotatedCopy: value });
+								});
+						});
+				}
+			},
+			{
+				name: "New page format",
+				desc: "What Add page creates. Match the current page copies its paper, size, and color when it has one (an added page or a page of a notebook made by this plugin); otherwise the format below is used.",
+				render: (setting) => {
+					setting
+						.setName("New page format")
+						.setDesc("What Add page creates. Match the current page copies its paper, size, and color when it has one (an added page or a page of a notebook made by this plugin); otherwise the format below is used.")
+						.addDropdown((dropdown) => {
+							dropdown
+								.addOption("match", "Match the current page")
+								.addOption("fixed", "Always use the format below")
+								.setValue(this.plugin.getNewPageFormat().mode)
+								.onChange(async (value) => {
+									await updateNewPageFormat({ mode: value === "fixed" ? "fixed" : "match" });
+								});
+						});
+				}
+			},
+			{
+				name: "New page paper",
+				desc: "Ruling for new pages when the format above is not taken from the current page.",
+				render: (setting) => {
+					setting
+						.setName("New page paper")
+						.setDesc("Ruling for new pages when the format above is not taken from the current page.")
+						.addDropdown((dropdown) => {
+							for (const template of NOTEBOOK_TEMPLATES) {
+								dropdown.addOption(template, getNotebookTemplateLabel(template));
+							}
+							dropdown
+								.setValue(this.plugin.getNewPageFormat().template)
+								.onChange(async (value) => {
+									await updateNewPageFormat({ template: value as NotebookTemplate });
+								});
+						});
+				}
+			},
+			{
+				name: "New page size",
+				desc: "Size for new pages when the format is not taken from the current page.",
+				render: (setting) => {
+					setting
+						.setName("New page size")
+						.setDesc("Size for new pages when the format is not taken from the current page.")
+						.addDropdown((dropdown) => {
+							for (const pageSize of NOTEBOOK_PAGE_SIZES) {
+								dropdown.addOption(pageSize, getNotebookPageSizeLabel(pageSize));
+							}
+							dropdown
+								.setValue(this.plugin.getNewPageFormat().pageSize)
+								.onChange(async (value) => {
+									await updateNewPageFormat({ pageSize: value as NotebookPageSize });
+								});
+						});
+				}
+			},
+			{
+				name: "New page color",
+				desc: "Paper color for new pages when the format is not taken from the current page.",
+				render: (setting) => {
+					setting
+						.setName("New page color")
+						.setDesc("Paper color for new pages when the format is not taken from the current page.")
+						.addDropdown((dropdown) => {
+							const current = this.plugin.getNewPageFormat().paperColor.toLowerCase();
+							for (const preset of PAPER_COLOR_PRESETS) {
+								dropdown.addOption(preset.color, preset.label);
+							}
+							if (!PAPER_COLOR_PRESETS.some((preset) => preset.color.toLowerCase() === current)) {
+								dropdown.addOption(current, "Custom");
+							}
+							dropdown
+								.setValue(current)
+								.onChange(async (value) => {
+									await updateNewPageFormat({ paperColor: value });
 								});
 						});
 				}
@@ -486,6 +572,18 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 		this.renderSettingDefinitions(containerEl, definitions, [
 			"Automatic region embed copy",
 			"Embed controls"
+		]);
+
+		this.renderSettingsSection(
+			containerEl,
+			"Pages",
+			"Choose what Add page creates."
+		);
+		this.renderSettingDefinitions(containerEl, definitions, [
+			"New page format",
+			"New page paper",
+			"New page size",
+			"New page color"
 		]);
 
 		this.renderSettingsSection(

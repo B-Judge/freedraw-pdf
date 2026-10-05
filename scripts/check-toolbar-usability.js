@@ -101,7 +101,7 @@ assertContains("main.ts", mainTs, "private createPageMenuButton(): HTMLButtonEle
 assertOccurrenceAtLeast("main.ts", mainTs, "this.openAddPageMenu(button);", 2, "Page control must open the focused page menu from pointer and click activation");
 assertContains("main.ts", mainTs, "button.createSpan({ text: \"Page\" });", "Page control must use an icon and a clear native-sized label");
 assertContains("main.ts", mainTs, "private openAddPageMenu(button: HTMLButtonElement): void", "Page control must expose the focused page menu");
-assertContains("main.ts", mainTs, ".setTitle(\"Quick add after current\")", "page menu must keep the common insertion action direct");
+assertContains("main.ts", mainTs, ".setTitle(`Add page after this one (${this.describePageFormat(newPageFormat)})`)", "page menu must keep the common insertion action direct");
 assertContains("main.ts", mainTs, ".setTitle(\"Manage pages...\")", "page menu must expose the complete mixed-page manager");
 assertNotContains("main.ts", mainTs, "setTitle(\"Add template page after current\")", "overflow menu must not keep the old duplicate add-after action");
 assertNotContains("main.ts", mainTs, "setTitle(\"Add template page before current\")", "overflow menu must not keep the old duplicate add-before action");

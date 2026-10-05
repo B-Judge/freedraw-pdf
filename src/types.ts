@@ -201,6 +201,8 @@ export interface NotebookPage {
 }
 
 export interface PdfPageTemplate {
+	/** Stable identity of this notebook page; follows the page when pages are reordered. */
+	id?: string;
 	page: number;
 	template: NotebookTemplate;
 	paperColor: string;

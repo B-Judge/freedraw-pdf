@@ -226,6 +226,7 @@ export class AnnotationStore {
 					: [],
 				pdfPageTemplates: Array.isArray(parsed.pdfPageTemplates)
 					? parsed.pdfPageTemplates.map((pageTemplate) => ({
+						...(typeof pageTemplate.id === "string" && pageTemplate.id ? { id: pageTemplate.id } : {}),
 						page: Math.max(1, Math.round(Number(pageTemplate.page) || 1)),
 						template: pageTemplate.template ?? "ruled",
 						paperColor: pageTemplate.paperColor ?? "#fffdf7",

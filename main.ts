@@ -67,7 +67,7 @@ import {
 } from "./src/text/textLayout";
 import { PreviewStateController, ToolStateController, isShapeTool } from "./src/tools/toolState";
 import { resolveOverlayModeCursor } from "./src/interaction/cursorState";
-import { bindSingleButtonActivation } from "./src/ui/buttonActivation";
+import { bindSingleButtonActivation, createButtonActivationGuard, type ButtonActivationGuard } from "./src/ui/buttonActivation";
 import { resolveAnchoredPopoverPlacement } from "./src/ui/popoverPlacement";
 import { TransientPopoverRegistry, createTransientPopoverEnvironment } from "./src/ui/transientPopoverRegistry";
 import { addMenuDescriptors, menuSeparator, type MenuDescriptor } from "./src/ui/menuDescriptors";
@@ -460,6 +460,7 @@ class NativePdfAnnotatorSession {
 	private statusEl: HTMLDivElement | null = null;
 	private readonly transientPopovers: TransientPopoverRegistry<TransientPopoverKey>;
 	private activeNativeMenu: Menu | null = null;
+	private readonly historyButtonGuards = new Map<string, ButtonActivationGuard>();
 	private pageListFilter: "all" | "added" | "removed" = "all";
 	private pageListQuery = "";
 	private nativeMixedPageInputEl: HTMLInputElement | null = null;
@@ -8107,9 +8108,15 @@ class NativePdfAnnotatorSession {
 		button.title = label;
 		setIcon(button, icon);
 		// One press must run exactly one undo or redo step. The click that follows
-		// a pointer-activated press is suppressed until it arrives, not for a
-		// single timer tick, which expired before the pen or finger lifted.
-		bindSingleButtonActivation(button, this.ownerWindow, onActivate);
+		// a pointer-activated press is suppressed until it arrives. The guard is
+		// kept per action on the session, because undo/redo rebuild the toolbar
+		// and that click then lands on the new button.
+		let guard = this.historyButtonGuards.get(label);
+		if (!guard) {
+			guard = createButtonActivationGuard();
+			this.historyButtonGuards.set(label, guard);
+		}
+		bindSingleButtonActivation(button, this.ownerWindow, onActivate, guard);
 		return button;
 	}
 

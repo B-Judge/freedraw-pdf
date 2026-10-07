@@ -338,10 +338,11 @@ if (
 	throw new Error(`A bottom-anchored menu can overlap its toolbar anchor: ${JSON.stringify(bottomToolbarPlacement)}`);
 }
 
-// Undo/redo buttons must run exactly one history step per press. The old guard
-// was cleared by a zero-delay timer that fired before the pen or finger lifted,
-// so the trailing click ran undo a second time.
-assertContains("main.ts", mainTs, "bindSingleButtonActivation(button, this.ownerWindow, onActivate);", "toolbar history buttons must use the single-activation helper");
+// Undo/redo buttons must run exactly one history step per press. Two causes
+// of a double step are covered: the guard was cleared by a zero-delay timer
+// before the pen or finger lifted, and undo/redo rebuild the toolbar, so the
+// press's click lands on a new button (touch) or on the toolbar (mouse, pen).
+assertContains("main.ts", mainTs, "bindSingleButtonActivation(button, this.ownerWindow, onActivate, guard);", "toolbar history buttons must use the single-activation helper with a guard shared across toolbar rebuilds");
 {
 	const vm = require("vm");
 	const activationSource = ts.transpileModule(read("src/ui/buttonActivation.ts"), {
@@ -349,23 +350,22 @@ assertContains("main.ts", mainTs, "bindSingleButtonActivation(button, this.owner
 	}).outputText;
 	const activationModule = { exports: {} };
 	vm.runInNewContext(activationSource, { module: activationModule, exports: activationModule.exports }, { filename: "buttonActivation.check.cjs" });
-	const { bindSingleButtonActivation, POINTER_CLICK_SUPPRESSION_MS } = activationModule.exports;
+	const { bindSingleButtonActivation, createButtonActivationGuard, POINTER_CLICK_SUPPRESSION_MS } = activationModule.exports;
 
-	function createHarness() {
+	// A fake window: timers on a manual clock, plus window-level listeners. Like a
+	// browser, a click is seen by window capture listeners before its target.
+	function createWindow() {
 		let now = 0;
 		let nextHandle = 1;
 		const pending = new Map();
-		const timers = {
-			setTimeout(handler, timeout) {
-				const handle = nextHandle++;
-				pending.set(handle, { handler, at: now + timeout });
-				return handle;
-			},
-			clearTimeout(handle) {
-				pending.delete(handle);
-			}
+		const win = new EventTarget();
+		win.setTimeout = (handler, timeout) => {
+			const handle = nextHandle++;
+			pending.set(handle, { handler, at: now + timeout });
+			return handle;
 		};
-		const advance = (ms) => {
+		win.clearTimeout = (handle) => pending.delete(handle);
+		win.advance = (ms) => {
 			now += ms;
 			for (const [handle, timer] of [...pending].sort((a, b) => a[1].at - b[1].at)) {
 				if (timer.at <= now && pending.has(handle)) {
@@ -374,75 +374,143 @@ assertContains("main.ts", mainTs, "bindSingleButtonActivation(button, this.owner
 				}
 			}
 		};
-		const button = new EventTarget();
-		button.disabled = false;
-		let count = 0;
-		bindSingleButtonActivation(button, timers, () => { count += 1; });
-		const fire = (type, props) => {
+		const makeEvent = (type, props) => {
 			const event = new Event(type, { cancelable: true, bubbles: true });
 			for (const [key, value] of Object.entries(props)) {
 				Object.defineProperty(event, key, { value });
 			}
-			button.dispatchEvent(event);
+			return event;
 		};
-		// Click events as browsers send them: Chromium reports the pointer type on
-		// click (touch taps arrive with detail 0); WebKit omits it and uses detail 1.
-		const tap = (pointerType, holdMs, engine = "chromium") => {
-			fire("pointerdown", { pointerType, button: 0 });
-			advance(holdMs);
-			fire("click", engine === "chromium"
-				? { pointerType, detail: pointerType === "touch" ? 0 : 1 }
-				: { detail: 1 });
+		// target: a button, or null when the event lands on the toolbar around the buttons.
+		win.fire = (target, type, props) => {
+			if (type !== "pointerdown") {
+				win.dispatchEvent(makeEvent(type, props));
+			}
+			if (target && type !== "pointerup") {
+				target.dispatchEvent(makeEvent(type, props));
+			}
 		};
-		return { button, advance, fire, tap, count: () => count };
+		return win;
 	}
 
-	for (const engine of ["chromium", "webkit"]) {
-		for (const pointerType of ["pen", "touch", "mouse"]) {
-			for (const holdMs of [0, 30, 80, 250, 900]) {
-				const harness = createHarness();
-				harness.tap(pointerType, holdMs, engine);
-				if (harness.count() !== 1) {
-					throw new Error(`One ${pointerType} press (${engine}) held ${holdMs} ms ran ${harness.count()} history steps; it must run exactly one.`);
+	// Chromium reports the pointer type on click (touch taps arrive with detail 0);
+	// WebKit omits it and uses detail 1.
+	const clickProps = (pointerType, engine) => engine === "chromium"
+		? { pointerType, detail: pointerType === "touch" ? 0 : 1 }
+		: { detail: 1 };
+
+	// rebuild: "none" (button stays), "shared" (toolbar rebuilt, guard kept per
+	// action as the plugin does), or "unshared" (toolbar rebuilt, guard per button).
+	function createHarness(rebuild = "none") {
+		const win = createWindow();
+		const guard = createButtonActivationGuard();
+		let count = 0;
+		let current = null;
+		const build = () => {
+			current = new EventTarget();
+			current.disabled = false;
+			bindSingleButtonActivation(current, win, () => {
+				count += 1;
+				if (rebuild !== "none") {
+					build();
+				}
+			}, rebuild === "unshared" ? undefined : guard);
+		};
+		build();
+		// After a rebuild, Chromium sends a touch tap's click to the new button and a
+		// mouse or pen press's click to the toolbar around it.
+		const clickTarget = (pointerType) => rebuild !== "none" && pointerType !== "touch" ? null : current;
+		const tap = (pointerType, holdMs, engine = "chromium", pointerId = 1) => {
+			win.fire(current, "pointerdown", { pointerType, pointerId, button: 0 });
+			win.advance(holdMs);
+			win.fire(current, "pointerup", { pointerType, pointerId });
+			win.fire(clickTarget(pointerType), "click", clickProps(pointerType, engine));
+			win.advance(1);
+		};
+		return { win, tap, button: () => current, count: () => count };
+	}
+
+	for (const rebuild of ["none", "shared"]) {
+		for (const engine of ["chromium", "webkit"]) {
+			for (const pointerType of ["pen", "touch", "mouse"]) {
+				for (const holdMs of [0, 30, 80, 250, 900, 1500]) {
+					const harness = createHarness(rebuild);
+					harness.tap(pointerType, holdMs, engine);
+					if (harness.count() !== 1) {
+						throw new Error(`One ${pointerType} press (${engine}, toolbar ${rebuild === "none" ? "kept" : "rebuilt"}) held ${holdMs} ms ran ${harness.count()} history steps; it must run exactly one.`);
+					}
 				}
 			}
 		}
 	}
 
-	const repeated = createHarness();
-	repeated.tap("pen", 60);
-	repeated.advance(120);
-	repeated.tap("pen", 60);
-	repeated.advance(120);
-	repeated.tap("pen", 60);
-	if (repeated.count() !== 3) {
-		throw new Error(`Three quick pen taps ran ${repeated.count()} history steps; each tap must run exactly one.`);
+	const unshared = createHarness("unshared");
+	unshared.tap("touch", 60);
+	if (unshared.count() !== 2) {
+		throw new Error(`Without a shared guard the rebuilt toolbar must reproduce the double step (got ${unshared.count()}).`);
+	}
+
+	for (const rebuild of ["none", "shared"]) {
+		for (const pointerType of ["pen", "touch", "mouse"]) {
+			const repeated = createHarness(rebuild);
+			for (let index = 0; index < 3; index += 1) {
+				repeated.tap(pointerType, 60);
+				repeated.win.advance(80);
+			}
+			if (repeated.count() !== 3) {
+				throw new Error(`Three quick ${pointerType} taps (toolbar ${rebuild === "none" ? "kept" : "rebuilt"}) ran ${repeated.count()} history steps; each tap must run exactly one.`);
+			}
+		}
+	}
+
+	// A pen tap followed quickly by a mouse click: the first press must have ended.
+	const mixed = createHarness("shared");
+	mixed.tap("pen", 50);
+	mixed.win.advance(100);
+	mixed.tap("mouse", 50);
+	if (mixed.count() !== 2) {
+		throw new Error(`A mouse click right after a pen tap ran ${mixed.count() - 1} history steps; it must run one.`);
+	}
+
+	// A palm or second finger touching the button during a stylus tap is part of that tap.
+	const twoContacts = createHarness("shared");
+	twoContacts.win.fire(twoContacts.button(), "pointerdown", { pointerType: "pen", pointerId: 7, button: 0 });
+	twoContacts.win.fire(twoContacts.button(), "pointerdown", { pointerType: "touch", pointerId: 8, button: 0 });
+	twoContacts.win.fire(null, "pointerup", { pointerType: "touch", pointerId: 8 });
+	twoContacts.win.fire(null, "pointerup", { pointerType: "pen", pointerId: 7 });
+	twoContacts.win.fire(null, "click", { pointerType: "pen", detail: 1 });
+	twoContacts.win.advance(1);
+	if (twoContacts.count() !== 1) {
+		throw new Error(`Two contacts during one tap ran ${twoContacts.count()} history steps; they must run exactly one.`);
 	}
 
 	const keyboard = createHarness();
-	keyboard.fire("click", { pointerType: "", detail: 0 });
+	keyboard.win.fire(keyboard.button(), "click", { pointerType: "", detail: 0 });
 	if (keyboard.count() !== 1) {
 		throw new Error("Keyboard activation (click without a pointer press) must run one history step.");
 	}
 
-	const slidOff = createHarness();
-	slidOff.fire("pointerdown", { pointerType: "pen", button: 0 });
-	slidOff.advance(POINTER_CLICK_SUPPRESSION_MS + 50);
-	slidOff.fire("click", { pointerType: "", detail: 0 });
-	if (slidOff.count() !== 2) {
-		throw new Error("A keyboard click long after an abandoned press must not stay suppressed.");
+	// A press that slides off the button produces no click; the next press still works.
+	const slidOff = createHarness("shared");
+	slidOff.win.fire(slidOff.button(), "pointerdown", { pointerType: "touch", pointerId: 3, button: 0 });
+	slidOff.win.fire(null, "pointerup", { pointerType: "touch", pointerId: 3 });
+	slidOff.win.advance(POINTER_CLICK_SUPPRESSION_MS + 10);
+	slidOff.tap("touch", 40, "chromium", 4);
+	slidOff.win.fire(slidOff.button(), "click", { pointerType: "", detail: 0 });
+	if (slidOff.count() !== 3) {
+		throw new Error(`After a press that slid off, a new tap and a keyboard click must each run one step (got ${slidOff.count()} in total).`);
 	}
 
 	const disabled = createHarness();
-	disabled.button.disabled = true;
+	disabled.button().disabled = true;
 	disabled.tap("pen", 60);
-	disabled.fire("click", { pointerType: "", detail: 0 });
+	disabled.win.fire(disabled.button(), "click", { pointerType: "", detail: 0 });
 	if (disabled.count() !== 0) {
 		throw new Error("A disabled history button must not run history steps.");
 	}
 
 	const secondaryMouse = createHarness();
-	secondaryMouse.fire("pointerdown", { pointerType: "mouse", button: 2 });
+	secondaryMouse.win.fire(secondaryMouse.button(), "pointerdown", { pointerType: "mouse", pointerId: 1, button: 2 });
 	if (secondaryMouse.count() !== 0) {
 		throw new Error("A secondary mouse button must not run a history step.");
 	}
